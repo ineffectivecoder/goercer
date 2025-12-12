@@ -1036,6 +1036,7 @@ Microsoft's patches only addressed **unauthenticated** access. Authenticated coe
 - **@filip_dragovic**: DFSCoerce discovery
 - **impacket team**: Reference NTLM/DCERPC implementation
 - **go-smb** (jfjallid): Go SMB client library [go-smb](https://github.com/jfjallid/go-smb)
+- **mjwhitta**: Professional CLI flag parsing library [cli](https://github.com/mjwhitta/cli)
 - **Microsoft**: Protocol specifications
 
 ---
