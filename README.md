@@ -82,7 +82,7 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/goercer.git
+git clone https://github.com/ineffectivecoder/goercer.git
 cd goercer
 ./build.sh
 ```
