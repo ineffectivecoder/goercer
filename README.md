@@ -32,6 +32,25 @@ The build script will automatically fetch the required `go-smb-coercer` fork wit
 
 ---
 
+## Code Structure
+
+**Single-File Design**: The entire implementation is in `goercer.go` (~1900 lines). This is an intentional design choice for:
+- **Portability**: Easy to copy and deploy as a single file
+- **Simplicity**: No complex package structure to navigate
+- **Self-contained**: All coercion methods, auth code, and crypto in one place
+- **Educational value**: Complete NTLM/DCERPC flow visible in sequence
+
+The file is organized into logical sections:
+1. **NTLM Authentication** (lines 551-1200): Full PKT_PRIVACY auth implementation
+2. **Coercion Methods** (lines 241-550): PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce
+3. **DCERPC Encoding** (lines 1201-1600): Request/response handling
+4. **NDR Stub Builders** (lines 1601-1900): Method-specific parameter encoding
+5. **Utilities** (lines 1901-1919): UUID parsing, string conversion
+
+While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.), the single-file approach makes it easier to understand the complete attack flow and deploy to target environments.
+
+---
+
 ## Usage
 
 ```bash
