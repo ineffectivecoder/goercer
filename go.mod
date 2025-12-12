@@ -3,11 +3,12 @@ module goercer
 go 1.24.1
 
 require (
+	github.com/ineffectivecoder/go-pkinit v0.0.0-00010101000000-000000000000
 	github.com/jfjallid/go-smb v0.6.7
 	github.com/mjwhitta/cli v1.14.0
-	golang.org/x/crypto v0.37.0
-	golang.org/x/net v0.39.0
-	golang.org/x/term v0.31.0
+	golang.org/x/crypto v0.46.0
+	golang.org/x/net v0.47.0
+	golang.org/x/term v0.38.0
 )
 
 require (
@@ -17,7 +18,7 @@ require (
 	github.com/jfjallid/mstypes v0.0.1 // indirect
 	github.com/jfjallid/ndr v0.0.1 // indirect
 	github.com/mjwhitta/errors v1.0.7 // indirect
-	golang.org/x/sys v0.36.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
 )
 
 replace github.com/jfjallid/go-smb => github.com/ineffectivecoder/go-smb-coercer v0.6.7

