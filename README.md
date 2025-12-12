@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="goercer.jpeg" alt="GOERCER Logo" width="400"/>
+</div>
+
 # Goercer - NTLM Coercion Attack Tool
 
 A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods, alternative named pipes, and **pass-the-hash authentication**.
