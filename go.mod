@@ -16,4 +16,4 @@ require (
 	golang.org/x/net v0.39.0 // indirect
 )
 
-replace github.com/jfjallid/go-smb => ./go-smb-fork
+replace github.com/jfjallid/go-smb => github.com/ineffectivecoder/go-smb-coercer v0.6.7
