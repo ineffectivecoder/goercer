@@ -459,7 +459,7 @@ smb/
 
 **goercer** (main project):
 ```
-goercer_full.go            Main implementation with all coercion methods
+goercer.go                 Main implementation with all coercion methods
 build.sh                   Build script
 go.mod                     Module with replace directive for go-smb-coercer fork
 README.md                  This file
