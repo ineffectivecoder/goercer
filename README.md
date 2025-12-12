@@ -120,28 +120,72 @@ While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.)
 
 ### Command-Line Flags
 
-```
-Usage: goercer [OPTIONS]
+All flags use the modern GNU-style format with short (`-t`) and long (`--target`) options.
 
-REQUIRED FLAGS:
-  -t, --target=STRING      Target server IP address
-  -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
-  -u, --user=STRING        Domain username
-  -d, --domain=STRING      Domain name
+#### Required Flags
 
-AUTHENTICATION (choose one or omit to be prompted):
-  -p, --password=STRING    Password (prompted if not provided)
-  -H, --hash=STRING        NTLM hash (32 hex characters)
+| Flag | Long Form | Description | Example |
+|------|-----------|-------------|---------|
+| `-t` | `--target` | Target server IP address (validates xxx.xxx.xxx.xxx format) | `-t 10.0.0.10` |
+| `-l` | `--listener` | Listener IP for callback - Responder/ntlmrelayx (validates IP format) | `-l 10.0.0.5` |
+| `-u` | `--user` | Domain username for authentication | `-u john` or `-u administrator` |
+| `-d` | `--domain` | Domain name (can be NetBIOS or FQDN) | `-d CORP` or `-d corp.local` |
 
-OPTIONAL FLAGS:
-  -m, --method=STRING      Coercion method: petitpotam, spoolsample, 
-                           shadowcoerce, dfscoerce (default: petitpotam)
-      --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr, 
-                           samr, netlogon, lsass (default: lsarpc)
-      --proxy=STRING       SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)
-  -v, --verbose            Enable verbose/debug output
-  -h, --help               Display help message
-```
+**Note**: All four flags above are mandatory. The tool will display an error and usage information if any are missing.
+
+#### Authentication Flags (Choose One or Omit)
+
+| Flag | Long Form | Description | Example | Notes |
+|------|-----------|-------------|---------|-------|
+| `-p` | `--password` | Password for authentication | `-p Password123` | ⚠️ Visible in shell history |
+| `-H` | `--hash` | NTLM hash (pass-the-hash) | `-H 8846f7eaee8fb117ad06bdd830b7586c` | Must be 32 hex characters |
+| *(omit)* | *(omit)* | Interactive password prompt | *(no flag)* | ✅ **Most secure** - hidden input, no history |
+
+**Password Prompting Behavior**:
+- If neither `-p` nor `-H` is provided, the tool **prompts for input** with hidden characters
+- You can enter either a password **or** an NTLM hash at the prompt
+- The tool automatically detects which you provided (hash = 32 hex characters)
+- Recommended approach: omit both flags to avoid credentials in shell history
+
+**Validation**:
+- NTLM hash must be exactly 32 hexadecimal characters (0-9, a-f, A-F)
+- Invalid hashes will be rejected with an error message
+
+#### Optional Flags
+
+| Flag | Long Form | Default | Description | Valid Values |
+|------|-----------|---------|-------------|--------------|
+| `-m` | `--method` | `petitpotam` | Coercion method to use | `petitpotam`, `spoolsample`, `shadowcoerce`, `dfscoerce` |
+| | `--pipe` | `lsarpc` | Named pipe (PetitPotam only) | `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
+| | `--proxy` | *(none)* | SOCKS5 proxy URL for pivoting | `socks5://127.0.0.1:1080` |
+| `-v` | `--verbose` | `false` | Enable debug output (59 DEBUG statements) | *(boolean flag, no value)* |
+| `-h` | `--help` | - | Display help message and exit | *(boolean flag, no value)* |
+
+**Method Details**:
+- `petitpotam`: MS-EFSRPC - **6 opnums**, works on ALL Windows versions, **most reliable**
+- `spoolsample`: MS-RPRN - **3 callbacks**, requires Print Spooler service running
+- `shadowcoerce`: MS-FSRVP - Requires Volume Shadow Copy (VSS) service configured
+- `dfscoerce`: MS-DFSNM - Requires DFS Namespaces role installed (rarely works)
+
+**Pipe Details** (PetitPotam only):
+- `lsarpc`: Default, most compatible (Local Security Authority RPC)
+- `efsr`: Encrypted File System Remote (original PetitPotam pipe)
+- `samr`: Security Account Manager Remote (tested, works with all 6 opnums)
+- `netlogon`: Netlogon service pipe (tested, works with all 6 opnums)
+- `lsass`: Local Security Authority Subsystem (tested, works with all 6 opnums)
+
+All pipes bind to the same UUID (`c681d488-d850-11d0-8c52-00c04fd90f7e`) and execute the same 6 opnums. Choice depends on network filtering/monitoring.
+
+**Proxy Format**:
+- Must start with `socks5://`
+- Must include IP/hostname and port: `socks5://IP:PORT`
+- Example: `socks5://127.0.0.1:1080`
+- Invalid URLs will be rejected with an error message
+
+**Verbose Flag**:
+- Without `-v`: Clean output with `[+]`, `[-]`, `[*]` status messages
+- With `-v`: Adds 59 `[DEBUG]` statements showing packet dumps, crypto operations, NTLM flows
+- Use for troubleshooting authentication issues or learning attack internals
 
 ### Authentication
 
@@ -194,7 +238,11 @@ ssh -D 1080 user@pivot-host
 
 ### Help Output
 
-```
+Display the help message with `-h` or `--help`:
+
+```bash
+$ ./goercer -h
+
 Usage: goercer [OPTIONS]
 
 DESCRIPTION
@@ -203,18 +251,23 @@ DESCRIPTION
 OPTIONS
     -d, --domain=STRING      Domain name
     -H, --hash=STRING        NTLM hash (32 hex characters)
-    -h, --help               Display this help message
+    -h, --help               Display this help message.
     -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
     -m, --method=STRING      Coercion method: petitpotam, spoolsample,
                              shadowcoerce, dfscoerce
     -p, --password=STRING    Password (prompted if not provided)
-        --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr,
-                             samr, netlogon, lsass
+        --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr, samr,
+                             netlogon, lsass
         --proxy=STRING       SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)
     -t, --target=STRING      Target server IP address
     -u, --user=STRING        Domain username
     -v, --verbose            Enable verbose/debug output
+
+AUTHORS
+    ineffectivecoder
 ```
+
+**Note**: Options are listed alphabetically by long form. Use `--help` for quick reference of all available flags.
 
 ### Verbose Mode
 
