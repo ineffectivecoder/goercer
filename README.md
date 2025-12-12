@@ -10,7 +10,7 @@ A Go implementation of NTLM coercion attacks using **DCERPC authentication level
 
 ```bash
 # 1. Install
-git clone https://github.com/YOUR_USERNAME/goercer.git
+git clone https://github.com/ineffectivecoder/goercer.git
 cd goercer
 ./build.sh
 
