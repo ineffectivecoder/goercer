@@ -146,7 +146,7 @@ func main() {
 	cli.Align = true
 	cli.Banner = "goercer [OPTIONS]"
 	cli.Info("Coerces Windows servers to authenticate to an attacker-controlled listener")
-	cli.Info("Universal: --pipe efsrpc works on all Windows (10/11, Server 2016-2025) - 100% tested")
+	cli.Info("Universal: --pipe efsrpc works on all Windows (10/11, Server 2016-2025) as of 12/13/25")
 	cli.Authors = []string{"ineffectivecoder"}
 
 	// Define flags

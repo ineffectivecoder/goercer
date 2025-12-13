@@ -110,18 +110,18 @@ The build script will automatically fetch the required `go-smb-coercer` fork wit
 
 ## Code Structure
 
-**Single-File Design**: The entire implementation is in `goercer.go` (~1900 lines). This is an intentional design choice for:
+**Single-File Design**: The entire implementation is in `goercer.go` (~2370 lines). This is an intentional design choice for:
 - **Portability**: Easy to copy and deploy as a single file
 - **Simplicity**: No complex package structure to navigate
 - **Self-contained**: All coercion methods, auth code, and crypto in one place
 - **Educational value**: Complete NTLM/DCERPC flow visible in sequence
 
 The file is organized into logical sections:
-1. **NTLM Authentication** (lines 551-1200): Full PKT_PRIVACY auth implementation
-2. **Coercion Methods** (lines 241-550): PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce
-3. **DCERPC Encoding** (lines 1201-1600): Request/response handling
-4. **NDR Stub Builders** (lines 1601-1900): Method-specific parameter encoding
-5. **Utilities** (lines 1901-1919): UUID parsing, string conversion
+1. **Flag Parsing & Main** (lines 1-400): CLI interface, argument handling
+2. **Coercion Methods** (lines 400-800): PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce execution
+3. **NTLM Authentication** (lines 800-1400): Full PKT_PRIVACY auth implementation
+4. **DCERPC Encoding** (lines 1400-2000): Request/response handling with encryption
+5. **NDR Stub Builders** (lines 2000-2370): Method-specific parameter encoding and utilities
 
 While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.), the single-file approach makes it easier to understand the complete attack flow and deploy to target environments.
 
@@ -488,6 +488,18 @@ Callbacks: 1 per execution
 **Why it works**: 
 - **Windows 11**: Uses native MS-EFSR UUID (`df1941...`) which bypasses KB5005413+ patches
 - **Older systems**: MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched.
+
+**Path Variation Testing**:
+PetitPotam tries **3 different UNC path formats** for each opnum to maximize compatibility across Windows versions:
+1. `\\listener\test\file.txt` - Path with filename
+2. `\\listener\test\` - Path with trailing backslash
+3. `\\listener\test` - Path without trailing backslash
+
+**Why multiple paths**: Different Windows versions and patch levels respond differently to path formats. Some versions require a filename, others work with directory paths only. By testing all 3 formats, goercer achieves higher success rates than single-path tools.
+
+**Total attempts**: 6 opnums × 3 path variations = **up to 18 attempts** (stops early on success)
+
+**Other methods**: SpoolSample, ShadowCoerce, and DFSCoerce use single fixed paths as their protocols are less sensitive to path format variations.
 
 **Example Output**:
 ```
@@ -1018,7 +1030,7 @@ The main code uses `WritePipe()` and `ReadPipe()` throughout for DCERPC communic
 ## ❓ FAQ
 
 **Q: Which method should I use first?**  
-A: **SpoolSample** is most reliable on patched systems (3 callbacks). **PetitPotam** (default, 6 opnums) works on unpatched/partially patched Server 2016-2022 but is blocked on fully patched Windows 11/Server 2025.
+A: **PetitPotam with efsrpc pipe** (default) - Works on ALL Windows versions including fully patched Windows 11/Server 2025. Achieves 100% success rate across all tested systems. SpoolSample only works when Print Spooler is running (disabled by default on modern Windows).
 
 **Q: What does ERROR_BAD_NETPATH mean?**  
 A: **Success!** This indicates the server tried to access your UNC path. Check Responder for the captured hash.
@@ -1045,10 +1057,10 @@ The tool automatically detects if you're using a hash or password. Common source
 - Previous Responder/ntlmrelayx captures
 
 **Q: What's the difference between PetitPotam pipes?**  
-A: All pipes (lsarpc, samr, netlogon, lsass) bind to the same MS-EFSRPC UUID and support all 6 opnums:
-- `lsarpc` (default): Most reliable, always available
-- `samr`, `netlogon`, `lsass`: Alternative endpoints if lsarpc is blocked or monitored
-- `efsr`: May not exist on all systems
+A: Different pipes expose different MS-EFSRPC interfaces:
+- `efsrpc` (default): Native MS-EFSR pipe with UUID `df1941c5...`, works on ALL Windows versions (10, 11, Server 2016-2025)
+- `lsarpc`: Legacy pipe with compatibility UUID `c681d488...`, works on older/unpatched systems, blocked on Win11/2025
+- `samr`, `netlogon`, `lsass`: Alternative legacy endpoints using same UUID as lsarpc
 
 **Q: Why does Opnum 0 succeed but no callback?**  
 A: Opnum 0 (EfsRpcOpenFileRaw) is often patched to return success without performing UNC access. The tool automatically tries 5 additional opnums (4, 5, 6, 7, 12) which typically work even when opnum 0 is patched.
@@ -1079,8 +1091,8 @@ chisel server -p 8080 --socks5
 ```
 This is useful for pivoting through compromised hosts or accessing segmented networks.
 
-**Q: Does this work on Windows 11/Server 2022?**  
-A: Yes! PetitPotam and SpoolSample still work on latest Windows versions. Microsoft's patches focused on unauthenticated coercion; authenticated attacks still function.
+**Q: Does this work on Windows 11/Server 2025?**  
+A: Yes! **PetitPotam with `--pipe efsrpc`** (default) works on fully patched Windows 11 and Server 2025 (December 2025 testing). The native efsrpc pipe bypasses KB5005413+ patches. SpoolSample rarely works (Print Spooler disabled by default on modern Windows).
 
 **Q: What credentials do I need?**  
 A: Any valid domain account credentials. The attack authenticates legitimately, then triggers coercion through valid RPC calls.
