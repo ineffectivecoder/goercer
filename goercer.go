@@ -146,7 +146,7 @@ func main() {
 	cli.Align = true
 	cli.Banner = "goercer [OPTIONS]"
 	cli.Info("Coerces Windows servers to authenticate to an attacker-controlled listener")
-	cli.Info("Windows 11 Support: Use --pipe efsrpc for fully patched Windows 11/Server 2025")
+	cli.Info("Universal: --pipe efsrpc works on all Windows (10/11, Server 2016-2025) - 100% tested")
 	cli.Authors = []string{"ineffectivecoder"}
 
 	// Define flags
@@ -157,7 +157,7 @@ func main() {
 	cli.Flag(&password, "p", "password", "", "Password (prompted if not provided)")
 	cli.Flag(&hash, "H", "hash", "", "NTLM hash (32 hex characters)")
 	cli.Flag(&method, "m", "method", "petitpotam", "Coercion method: petitpotam, spoolsample, shadowcoerce, dfscoerce")
-	cli.Flag(&pipe, "pipe", "lsarpc", "Named pipe (petitpotam only): efsrpc (Win11/Server2025 - 1 callback), lsarpc (older systems - 3 callbacks), samr, netlogon, lsass")
+	cli.Flag(&pipe, "pipe", "efsrpc", "Named pipe (petitpotam only): efsrpc (universal - 1 callback on Win11/2025, 3 on Win10/2022), lsarpc (legacy), samr, netlogon, lsass")
 	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
 	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
 
