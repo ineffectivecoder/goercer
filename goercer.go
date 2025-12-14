@@ -22,6 +22,7 @@ Technical Implementation:
 - Encrypted MS-EFSRPC call with UNC path to listener
 - Server attempts UNC access, triggering NTLM auth to listener
 
+References
 References:
 - MS-EFSR: Encrypting File System Remote Protocol
 - MS-RPCE: RPC Protocol Extensions

