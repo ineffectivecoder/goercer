@@ -4,6 +4,10 @@
 
 # Goercer - NTLM Coercion Attack Tool
 
+## Experimental!!!
+
+Most of this code was generated using AI as a learning experiment. Use at your own risk. Confirmed many coercion methods in an AD lab. Use cautiously in real engagements after thorough testing.
+
 A Go implementation of NTLM coercion attacks using **DCERPC authentication level 6 (PKT_PRIVACY)** with full encryption and signing. Supports multiple coercion methods, alternative named pipes, and **pass-the-hash authentication**.
 
 ## 🚀 Quick Start
