@@ -2,7 +2,7 @@
   <img src="goercer.jpeg" alt="GOERCER Logo" width="400"/>
 </div>
 
-# Goercer - NTLM Coercion Attack Tool
+# Goercer - NTLM Coercion Tool
 
 ## Experimental!!!
 
