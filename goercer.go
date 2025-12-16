@@ -90,6 +90,7 @@ var verbose bool
 type NTLMAuth struct {
 	user           string // Username for authentication
 	password       string // Password for NT hash calculation
+	hash           []byte // Pre-computed NT hash (16 bytes) - if provided, password is ignored
 	domain         string // Domain name (NOT uppercased in Type 3 message)
 	challenge      []byte // 8-byte server challenge from Type 2 (Challenge) message
 	flags          uint32 // Negotiated NTLM flags from server's Challenge message
@@ -385,9 +386,15 @@ func main() {
 	defer session.TreeDisconnect(share)
 
 	// Initialize NTLM auth state (reusable across methods)
+	var hashBytes []byte
+	if hash != "" {
+		hashBytes, _ = hex.DecodeString(hash)
+	}
+
 	auth := &NTLMAuth{
 		user:       username,
-		password:   password, // Will be empty if using hash
+		password:   password,  // Will be empty if using hash
+		hash:       hashBytes, // Will be nil if using password
 		domain:     domain,
 		listenerIP: listener,
 		seqNum:     0,
@@ -1113,8 +1120,15 @@ func createNTLMAuthenticate(auth *NTLMAuth, challengeMsg []byte) []byte {
 
 	temp := buildTempBlob(timestamp, clientChallenge, targetInfo)
 
-	ntHash := ntHash(auth.password)
-	ntlmv2Hash := ntlmv2Hash(ntHash, auth.user, auth.domain)
+	// Use pre-computed hash if available, otherwise compute from password
+	var ntHashBytes []byte
+	if auth.hash != nil && len(auth.hash) == 16 {
+		ntHashBytes = auth.hash
+	} else {
+		ntHashBytes = ntHash(auth.password)
+	}
+
+	ntlmv2Hash := ntlmv2Hash(ntHashBytes, auth.user, auth.domain)
 	ntlmv2Resp := calculateNTLMv2Response(ntlmv2Hash, auth.challenge, temp)
 
 	// Calculate session keys from this NTLMv2 response
