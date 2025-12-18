@@ -853,16 +853,15 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 		}
 	}
 
-	// Use WritePipe/ReadPipe instead of IOCTL to replicate impacket approach
-	fmt.Println("[+] Sending Bind via WritePipe...")
-	_, err := (*pipe).WritePipe(bindReq)
+	fmt.Println("[+] Sending Bind via WriteFile...")
+	_, err := (*pipe).WriteFile(bindReq, 0)
 	if err != nil {
 		return fmt.Errorf("bind write failed: %v", err)
 	}
 
 	// Read response
 	bindAck := make([]byte, 4096)
-	n, err := (*pipe).ReadPipe(bindAck)
+	n, err := (*pipe).ReadFile(bindAck, 0)
 	if err != nil {
 		return fmt.Errorf("bind read failed: %v", err)
 	}
@@ -990,13 +989,13 @@ func performAuthenticatedBind(pipe **smb.File, session *smb.Connection, share st
 	auth3Req := createDCERPCAuth3(auth, authenticateMsg)
 	if verbose {
 		if verbose {
-			fmt.Printf("[DEBUG] Sending Auth3 (%d bytes) via WritePipe\n", len(auth3Req))
+			fmt.Printf("[DEBUG] Sending Auth3 (%d bytes) via WriteFile\n", len(auth3Req))
 		}
 	}
 
-	// Use WritePipe which waits for SMB Write Response (like impacket's writeFile)
-	fmt.Println("[+] Sending Auth3 via WritePipe (should get SMB Write Response)...")
-	nAuth3, err := (*pipe).WritePipe(auth3Req)
+	// Use WriteFile which waits for SMB Write Response (like impacket's writeFile)
+	fmt.Println("[+] Sending Auth3 via WriteFile (should get SMB Write Response)...")
+	nAuth3, err := (*pipe).WriteFile(auth3Req, 0)
 	if err != nil {
 		return fmt.Errorf("Auth3 write failed: %v", err)
 	}
@@ -1819,16 +1818,15 @@ func sendAuthenticatedRequestWithResponse(pipe *smb.File, auth *NTLMAuth, opnum 
 		fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
 	}
 
-	// Use WritePipe/ReadPipe (like impacket does)
-	fmt.Println("[+] Sending authenticated request via WritePipe...")
-	_, err := pipe.WritePipe(req)
+	fmt.Println("[+] Sending authenticated request via WriteFile...")
+	_, err := pipe.WriteFile(req, 0)
 	if err != nil {
 		return nil, fmt.Errorf("request write failed: %v", err)
 	}
 
 	// Read response
 	resp := make([]byte, 4096)
-	nResp, err := pipe.ReadPipe(resp)
+	nResp, err := pipe.ReadFile(resp, 0)
 	if err != nil {
 		return nil, fmt.Errorf("request read failed: %v", err)
 	}
@@ -1928,16 +1926,15 @@ func sendAuthenticatedRequestOld(pipe *smb.File, auth *NTLMAuth, opnum uint16, s
 		fmt.Printf("[DEBUG] Authenticated request (%d bytes): %x...\n", len(req), req[:truncLen])
 	}
 
-	// Use WritePipe/ReadPipe (like impacket does)
-	fmt.Println("[+] Sending authenticated request via WritePipe...")
-	_, err := pipe.WritePipe(req)
+	fmt.Println("[+] Sending authenticated request via WriteFile...")
+	_, err := pipe.WriteFile(req, 0)
 	if err != nil {
 		return fmt.Errorf("request write failed: %v", err)
 	}
 
 	// Read response
 	resp := make([]byte, 4096)
-	nResp, err := pipe.ReadPipe(resp)
+	nResp, err := pipe.ReadFile(resp, 0)
 	if err != nil {
 		return fmt.Errorf("request read failed: %v", err)
 	}

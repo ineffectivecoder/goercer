@@ -19,5 +19,3 @@ require (
 	github.com/mjwhitta/errors v1.0.7 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 )
-
-replace github.com/jfjallid/go-smb => github.com/ineffectivecoder/go-smb v0.6.8
