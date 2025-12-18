@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="goercer.jpeg" alt="Goercer Logo" width="400"/>
-</p>
+![Goercer Logo](goercer.jpeg)
 
 # Goercer
 
