@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="goercer.jpeg" alt="Goercer Logo"/>
+</p>
+
 # Goercer
 
 NTLM coercion tool using authenticated DCERPC with PKT_PRIVACY (encryption + signing).
