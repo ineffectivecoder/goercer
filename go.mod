@@ -20,4 +20,4 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 )
 
-replace github.com/jfjallid/go-smb => github.com/ineffectivecoder/go-smb-coercer v0.6.7
+replace github.com/jfjallid/go-smb => github.com/ineffectivecoder/go-smb v0.6.8

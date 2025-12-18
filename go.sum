@@ -1,7 +1,7 @@
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/ineffectivecoder/go-smb-coercer v0.6.7 h1:y52HHx9ivD46fPlEskW7wyrHFrdb7khP9bVC/yC3StI=
-github.com/ineffectivecoder/go-smb-coercer v0.6.7/go.mod h1:Y/MMrSlRHwA9ZbnIoPV1PbEkOqW2UE4Gh0/bpmTqdOg=
+github.com/ineffectivecoder/go-smb v0.6.8 h1:rFoHZMccsuGLOEfZfM6t6hBOlvTKz9xuso91Q0cIDpU=
+github.com/ineffectivecoder/go-smb v0.6.8/go.mod h1:Y/MMrSlRHwA9ZbnIoPV1PbEkOqW2UE4Gh0/bpmTqdOg=
 github.com/jfjallid/gofork v1.7.6 h1:OYyS2HH597860gkDxxjNsl+NZRxoAnuRI6ZsP++kYKE=
 github.com/jfjallid/gofork v1.7.6/go.mod h1:r1EH4W9KY5iqtiGhAupnbzMRONsLDApdJ9EZH5NWFSc=
 github.com/jfjallid/gokrb5/v8 v8.5.1 h1:6Mt7/s5Am1ygDWDoglP/9VH+k1io8ln7hmMF7BiEPFA=
