@@ -1,3 +1,5 @@
+![Goercer Logo](goercer.jpeg)
+
 # Goercer
 
 NTLM credential coercion tool using authenticated DCERPC with PKT_PRIVACY
