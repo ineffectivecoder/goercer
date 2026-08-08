@@ -1,8 +1,17 @@
-Coercer
-impacket
-PetitPotam
-SpoolSample
-goercer
+# Binaries / build artifacts (anchored to repo root so cmd/goercer source is kept)
+/goercer.exe
+/goercer
+bin/
+*.test
+
+# Local scratch / research files
 resp.txt
 responderout
 local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
